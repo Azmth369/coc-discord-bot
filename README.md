@@ -4,7 +4,7 @@ A production-oriented Discord assistant combining **Clash of Clans API data, a d
 
 ## Commands
 
-- `/ask` → **Sarvam AI** for the normal, faster/low-cost clan analysis path.
+- `/ask` → **Sarvam AI** for the normal, faster everyday clan analysis path.
 - `/tell` → **Gemini** for the deeper Gemini analysis path.
 
 Both commands use the same database retrieval and analytics layer, so they answer from the same Clash of Clans data rather than from unrelated general knowledge.
@@ -71,7 +71,7 @@ Retrieval follows the intended safe-expansion strategy:
 
 ### Two AI providers
 
-`/ask` uses Sarvam's OpenAI-compatible Chat Completions API. `SARVAM_MODEL` can be set to `sarvam-105b`; the code defaults to that model.
+`/ask` uses Sarvam's OpenAI-compatible Chat Completions API and defaults to `sarvam-105b-conversations`, a conversational variant intended for real-time dialogue. `SARVAM_MODEL` can override it.
 
 `/tell` uses the Gemini REST API with the existing model fallback/retry chain. `GEMINI_MODEL` controls the preferred Gemini model.
 
@@ -95,7 +95,7 @@ Configure:
 - optional `DISCORD_GUILD_ID` for instant guild command registration
 - optional `AI_FORWARD_CHANNEL_ID`
 - `SARVAM_API_KEY` — required for `/ask`
-- optional `SARVAM_MODEL` (defaults to `sarvam-105b`)
+- optional `SARVAM_MODEL` (defaults to `sarvam-105b-conversations`)
 - `GEMINI_API_KEY` — required for `/tell`
 - optional `GEMINI_MODEL`
 
