@@ -5,7 +5,7 @@ import { db } from './db.js';
 const ANSWER_TTL_DAYS = 30;
 const CONVERSATION_TTL_MS = 60 * 60 * 1000;
 
-export async function createAiAnswer({ guildId, channelId, userId, provider, question, result }) {
+export async function createAiAnswer({ guildId, channelId, userId, provider, question, result, elapsed }) {
   const id = randomUUID();
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + ANSWER_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -17,6 +17,7 @@ export async function createAiAnswer({ guildId, channelId, userId, provider, que
     provider,
     question,
     full_answer: String(result || ''),
+    elapsed_seconds: elapsed || null,
     created_at: createdAt.toISOString(),
     expires_at: expiresAt.toISOString()
   });
@@ -35,7 +36,7 @@ export async function attachAiAnswerMessage(id, messageId) {
 export async function getAiAnswer(id, userId) {
   const { data, error } = await db
     .from('ai_answers')
-    .select('id,user_id,provider,question,full_answer,created_at,expires_at')
+    .select('id,user_id,provider,question,full_answer,elapsed_seconds,created_at,expires_at')
     .eq('id', id)
     .eq('user_id', userId)
     .gt('expires_at', new Date().toISOString())
@@ -61,15 +62,18 @@ export async function saveConversationTurn({ guildId, channelId, userId, provide
 }
 
 export async function getConversationTurns({ guildId, channelId, userId, limit = 5 }) {
-  const { data, error } = await db
+  let query = db
     .from('ai_conversations')
     .select('question,answer,provider,created_at')
-    .eq('guild_id', guildId || null)
-    .eq('channel_id', channelId || null)
     .eq('user_id', userId)
     .gt('expires_at', new Date().toISOString())
     .order('created_at', { ascending: false })
     .limit(Math.min(Math.max(Number(limit || 5), 1), 10));
+
+  query = guildId ? query.eq('guild_id', guildId) : query.is('guild_id', null);
+  query = channelId ? query.eq('channel_id', channelId) : query.is('channel_id', null);
+
+  const { data, error } = await query;
   if (error) throw error;
   return [...(data ?? [])].reverse();
 }
