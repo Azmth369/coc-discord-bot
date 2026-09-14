@@ -225,6 +225,19 @@ revoke all on table ai_conversations from anon, authenticated;
 grant select, insert, update, delete on table ai_answers to service_role;
 grant select, insert, update, delete on table ai_conversations to service_role;
 
+drop policy if exists "ai read clans" on clans;
+drop policy if exists "ai read players" on players;
+drop policy if exists "ai read snapshots" on player_snapshots;
+drop policy if exists "ai read wars" on wars;
+drop policy if exists "ai read war members" on war_members;
+drop policy if exists "ai read war attacks" on war_attacks;
+drop policy if exists "ai read cwl attacks" on cwl_attacks;
+drop policy if exists "ai read capital attacks" on capital_attacks;
+drop policy if exists "ai read cwl seasons" on cwl_seasons;
+drop policy if exists "ai read cwl rounds" on cwl_rounds;
+drop policy if exists "ai read cwl wars" on cwl_wars;
+drop policy if exists "ai read capital raids" on capital_raids;
+
 create policy "ai read clans" on clans for select to anon using (true);
 create policy "ai read players" on players for select to anon using (true);
 create policy "ai read snapshots" on player_snapshots for select to anon using (true);
