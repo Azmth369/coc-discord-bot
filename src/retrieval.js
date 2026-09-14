@@ -48,6 +48,18 @@ export async function getWarAttacks(warKeyValue, maxRows = 100) {
   return data ?? [];
 }
 
+export async function getAttackLog(filters = {}) {
+  let q = db.from('attack_log').select('attack_key,tournament_type,tournament_id,tournament_name,season_key,war_key,opponent_clan_tag,opponent_clan_name,attacker_tag,attacker_name,defender_tag,defender_name,district_id,district_name,attack_number,order_no,stars,destruction_percentage,duration_seconds,attack_time,observed_at,data').order('observed_at', { ascending: false });
+  if (filters.tournamentType) q = q.eq('tournament_type', filters.tournamentType);
+  if (filters.tournamentId) q = q.eq('tournament_id', filters.tournamentId);
+  if (filters.attackerTag) q = q.eq('attacker_tag', filters.attackerTag);
+  if (filters.opponentTag) q = q.eq('opponent_clan_tag', filters.opponentTag);
+  if (filters.since) q = q.gte('observed_at', filters.since);
+  const { data, error } = await q.limit(bounded(filters.limit, 200, 1000));
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function getCapitalSeasons(maxRows = 12) {
   const { data, error } = await db.from('capital_raids').select('season_key,data').order('season_key', { ascending: false }).limit(bounded(maxRows, 12, 50));
   if (error) throw error;
