@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './discord.js';
 import { syncClan, syncWar, syncHistory, syncCapital, syncCwl, run } from './sync.js';
 
 const schedules = [
@@ -40,4 +41,4 @@ for (const [name, ms, fn] of schedules) {
   setInterval(() => runSync(name, fn).catch(error => console.error(`[sync:${name}]`, error)), ms);
 }
 
-console.log('[sync] scheduler started');
+console.log('[sync] scheduler started; Discord bot is running in the same process');
