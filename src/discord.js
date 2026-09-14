@@ -14,7 +14,6 @@ import { answer, tell } from './ai.js';
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
 const guildId = process.env.DISCORD_GUILD_ID;
-const forwardChannelId = process.env.AI_FORWARD_CHANNEL_ID;
 const ponyoAlertChannelId = process.env.PONYO_ALERT_CHANNEL_ID;
 
 if (!token || !clientId) throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID are required');
@@ -148,20 +147,17 @@ function rememberAnswer(question, result, userId, provider, elapsed) {
 
 function viewerRow(id, page, total) {
   const row = new ActionRowBuilder();
-  row.addComponents(
-    new ButtonBuilder().setCustomId(`ai-page:${id}:prev`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
-    new ButtonBuilder().setCustomId(`ai-page:${id}:next`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(page >= total - 1)
-  );
-  if (forwardChannelId) {
-    row.addComponents(new ButtonBuilder().setCustomId(`ai-forward:${id}`).setLabel('Forward to AI channel').setStyle(ButtonStyle.Secondary));
+  if (page > 0) {
+    row.addComponents(new ButtonBuilder().setCustomId(`ai-page:${id}:less`).setLabel('See less').setStyle(ButtonStyle.Secondary));
+  }
+  if (page < total - 1) {
+    row.addComponents(new ButtonBuilder().setCustomId(`ai-page:${id}:more`).setLabel('See more').setStyle(ButtonStyle.Secondary));
   }
   return row;
 }
 
 function pageContent(provider, elapsed, chunks, page) {
-  const total = chunks.length;
-  const pageLabel = total > 1 ? ` • Page ${page + 1}/${total}` : '';
-  return `**${provider} • ${elapsed}s${pageLabel}**\n${chunks[page]}`;
+  return `**${provider} • ${elapsed}s**\n${chunks[page]}`;
 }
 
 function classifyProviderError(provider, error) {
@@ -278,50 +274,28 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  if (interaction.isButton() && interaction.customId.startsWith('ai-page:')) {
-    const [, id, direction] = interaction.customId.split(':');
-    const saved = pendingAnswers.get(id);
-    if (!saved || saved.expiresAt < Date.now()) {
-      await interaction.reply({ content: 'That AI answer has expired. Ask the question again.', ephemeral: true });
-      return;
-    }
-    if (saved.userId !== interaction.user.id) {
-      await interaction.reply({ content: 'Only the person who asked this question can turn its pages.', ephemeral: true });
-      return;
-    }
-    const chunks = splitDiscordMessage(saved.result);
-    const current = Number(saved.page || 0);
-    const page = Math.max(0, Math.min(chunks.length - 1, current + (direction === 'next' ? 1 : -1)));
-    saved.page = page;
-    saved.expiresAt = Date.now() + ANSWER_TTL_MS;
-    await interaction.update({ content: pageContent(saved.provider, saved.elapsed || '—', chunks, page), components: [viewerRow(id, page, chunks.length)] });
-    return;
-  }
-
-  if (!interaction.isButton() || !interaction.customId.startsWith('ai-forward:')) return;
-  const id = interaction.customId.slice('ai-forward:'.length);
+  if (!interaction.isButton() || !interaction.customId.startsWith('ai-page:')) return;
+  const [, id, direction] = interaction.customId.split(':');
   const saved = pendingAnswers.get(id);
   if (!saved || saved.expiresAt < Date.now()) {
     await interaction.reply({ content: 'That AI answer has expired. Ask the question again.', ephemeral: true });
     return;
   }
   if (saved.userId !== interaction.user.id) {
-    await interaction.reply({ content: 'Only the person who asked this question can forward the answer.', ephemeral: true });
+    await interaction.reply({ content: 'Only the person who asked this question can expand or collapse its answer.', ephemeral: true });
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
-  try {
-    const channel = await client.channels.fetch(forwardChannelId);
-    if (!channel?.isTextBased()) throw new Error('AI_FORWARD_CHANNEL_ID is not a text channel');
-    const chunks = splitDiscordMessage(`**${saved.provider || 'AI'} Analysis**\n**Question:** ${saved.question}\n\n${saved.result}`);
-    await channel.send(chunks[0]);
-    for (const chunk of chunks.slice(1)) await channel.send(chunk);
-    await interaction.editReply('Forwarded to the configured AI channel.');
-  } catch (error) {
-    console.error('[discord] forward failed', error);
-    await interaction.editReply('I could not forward the answer. Check the bot permissions and AI_FORWARD_CHANNEL_ID.');
-  }
+  const chunks = splitDiscordMessage(saved.result);
+  const current = Number(saved.page || 0);
+  const delta = direction === 'more' ? 1 : -1;
+  const page = Math.max(0, Math.min(chunks.length - 1, current + delta));
+  saved.page = page;
+  saved.expiresAt = Date.now() + ANSWER_TTL_MS;
+  await interaction.update({
+    content: pageContent(saved.provider, saved.elapsed || '—', chunks, page),
+    components: [viewerRow(id, page, chunks.length)]
+  });
 });
 
 setInterval(() => {
