@@ -23,10 +23,59 @@ async function buildContext(question) {
   return context;
 }
 
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function generateGemini(model,key,body,attempt=0){const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`; const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); if(!res.ok){const message=await res.text(); const error=new Error(`Gemini ${res.status}: ${message}`); error.status=res.status; if([408,429,500,502,503,504].includes(res.status)&&attempt<2){const delay=1200*(2**attempt)+Math.floor(Math.random()*400); console.warn(`[ai] ${model} returned ${res.status}; retrying in ${delay}ms`); await sleep(delay); return generateGemini(model,key,body,attempt+1);} throw error;} const json=await res.json(); return json.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'No answer generated.';}
+async function generateGemini(model,key,body){
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!res.ok){
+    const message=await res.text();
+    const error=new Error(`Gemini ${res.status}: ${message}`);
+    error.status=res.status;
+    throw error;
+  }
+  const json=await res.json();
+  return json.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'No answer generated.';
+}
 
-async function askGemini(question,context){const key=process.env.GEMINI_API_KEY;if(!key) throw new Error('GEMINI_API_KEY is required'); const configured=process.env.GEMINI_MODEL||'gemini-3.8-flash'; const models=[configured,'gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'].filter((m,i,a)=>m&&a.indexOf(m)===i); const system=`You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If context is insufficient, say what is missing. Calculate rankings from supplied values. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. Prefer targeted context and keep answers concise, useful, and data-backed.`; const body={system_instruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}]}],generationConfig:{temperature:0.15}}; let last; for(const model of models){try{console.log(`[ai] trying Gemini model ${model}`);return await generateGemini(model,key,body);}catch(error){last=error;if([404,408,429,500,502,503,504].includes(error.status)){console.warn(`[ai] ${model} unavailable (${error.status}); trying next Gemini model`);continue;}throw error;}} throw last||new Error('No Gemini model was available');}
+async function askGemini(question,context){
+  const key=process.env.GEMINI_API_KEY;
+  if(!key) throw new Error('GEMINI_API_KEY is required');
+
+  // Keep /tell latency-focused. Older/invalid model values such as gemini-2.5-flash
+  // are ignored instead of causing a wasted 404 request. Gemini 3 Flash models support
+  // low thinking, which Google documents as the latency-oriented setting.
+  const configured=process.env.GEMINI_MODEL||'gemini-3.8-flash';
+  const supported=['gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'];
+  const models=[supported.includes(configured)?configured:'gemini-3.8-flash',...supported].filter((m,i,a)=>a.indexOf(m)===i);
+  if(configured!==models[0]) console.warn(`[ai] ignoring unsupported/slow Gemini model ${configured}; using ${models[0]}`);
+
+  const system=`You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If context is insufficient, say what is missing. Calculate rankings from supplied values. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. Prefer targeted context and keep answers concise, useful, and data-backed.`;
+  const body={
+    system_instruction:{parts:[{text:system}]},
+    contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}]}],
+    generationConfig:{
+      thinkingConfig:{thinkingLevel:'low'},
+      maxOutputTokens:1200
+    }
+  };
+
+  let last;
+  for(const model of models){
+    try{
+      console.log(`[ai] trying Gemini model ${model} (low thinking)`);
+      return await generateGemini(model,key,body);
+    }catch(error){
+      last=error;
+      if([404,408,429,500,502,503,504].includes(error.status)){
+        // Do not retry the same overloaded model. Move immediately to the next
+        // fallback so Discord users are not stuck waiting through several backoffs.
+        console.warn(`[ai] ${model} unavailable (${error.status}); immediately trying next Gemini model`);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw last||new Error('No Gemini model was available');
+}
 
 async function askSarvam(question,context){
   const key=process.env.SARVAM_API_KEY;
