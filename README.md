@@ -72,9 +72,23 @@ Retrieval follows the intended safe-expansion strategy:
 
 ### Two AI providers
 
-`/ask` uses Sarvam's OpenAI-compatible Chat Completions API and defaults to `sarvam-105b-conversations`, a conversational variant intended for real-time dialogue. `SARVAM_MODEL` can override it.
+`/ask` uses Sarvam's OpenAI-compatible Chat Completions API and defaults to `sarvam-105b`, with `SARVAM_MODEL` available to override it.
 
 `/tell` uses the Gemini REST API with the existing model fallback/retry chain. `GEMINI_MODEL` controls the preferred Gemini model.
+
+### AI provider failure alerts
+
+The bot can send detailed, private provider failure alerts to a dedicated Discord channel by setting `PONYO_ALERT_CHANNEL_ID` to that channel's ID.
+
+Provider errors are classified separately for:
+
+- Context-window/token-size failures
+- Quota/rate-limit failures
+- API-key/authentication failures
+- Temporary provider/API failures
+- Unknown provider failures
+
+Users receive a short safe message with the recommended alternative (`/tell` for Gemini) instead of the raw provider response. The private Ponyo alert contains diagnostic details such as HTTP status, error body, command, user/channel context, question, and failure timing. Do not expose that alert channel to ordinary members.
 
 ### Deterministic analytics
 The application calculates evidence such as missed attacks and player trends in code before AI interpretation. This reduces hallucination risk for straightforward numerical questions.
@@ -114,8 +128,9 @@ Configure:
 - `DISCORD_CLIENT_ID`
 - optional `DISCORD_GUILD_ID` for instant guild command registration
 - optional `AI_FORWARD_CHANNEL_ID`
+- optional `PONYO_ALERT_CHANNEL_ID` — private Discord channel for detailed AI provider/quota/API failure alerts
 - `SARVAM_API_KEY` — required for `/ask`
-- optional `SARVAM_MODEL` (defaults to `sarvam-105b-conversations`)
+- optional `SARVAM_MODEL` (defaults to `sarvam-105b`)
 - `GEMINI_API_KEY` — required for `/tell`
 - optional `GEMINI_MODEL`
 
