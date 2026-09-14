@@ -123,18 +123,21 @@ const capitalSeasonKeys = [...new Set(capitalRows.map(r => `${r.clan_tag}:${r.co
 for (const seasonKey of capitalSeasonKeys) {
   const seasonRows = capitalRows.filter(r => `${r.clan_tag}:${r.context_ref}` === seasonKey);
   const opponents = [...new Set(seasonRows.map(r => r.defender_tag.split(':')[0]))];
-  await upsert('capital_raids', [{
-    clan_tag: seasonRows[0].clan_tag,
-    season_key: seasonKey,
-    data: {
-      source: 'legacy_attack_log_csv',
-      startTime: cocTimestampToIso(seasonRows[0].context_ref),
-      importedAttackRows: seasonRows.length,
-      opponentClanTags: opponents,
-      note: 'Attack details imported from legacy CSV. Summary fields not present in the source were intentionally left unknown.'
-    },
-    synced_at: new Date().toISOString()
-  }]);
+  const { data: existing } = await db.from('capital_raids').select('season_key').eq('season_key', seasonKey).maybeSingle();
+  if (!existing) {
+    await db.from('capital_raids').insert({
+      clan_tag: seasonRows[0].clan_tag,
+      season_key: seasonKey,
+      data: {
+        source: 'legacy_attack_log_csv',
+        startTime: cocTimestampToIso(seasonRows[0].context_ref),
+        importedAttackRows: seasonRows.length,
+        opponentClanTags: opponents,
+        note: 'Attack details imported from legacy CSV. Summary fields not present in the source were intentionally left unknown.'
+      },
+      synced_at: new Date().toISOString()
+    });
+  }
 }
 
 const warKeys = [...new Set(warRows.map(r => `legacy:${r.clan_tag}:${r.context_ref}`))];
