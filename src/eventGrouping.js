@@ -33,6 +33,26 @@ function formatRange(start, end) {
   return b ? `${a} – ${b}` : a;
 }
 
+function formatWarPeriod(start, end) {
+  if (start && end) return formatRange(start, end);
+  if (end) return `Ended ${formatDate(end)}`;
+  if (start) return `Started ${formatDate(start)}`;
+  return 'Unknown period';
+}
+
+function normalizeResult(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === 'win') return 'win';
+  if (raw === 'lose' || raw === 'loss') return 'loss';
+  if (raw === 'tie' || raw === 'draw') return 'tie';
+  return raw || null;
+}
+
+function getWarEndFromKey(warKey) {
+  const match = String(warKey ?? '').match(/:(\d{8}T\d{6}(?:\.\d+)?Z?)$/);
+  return match ? parseCoCTimestamp(match[1]) : null;
+}
+
 export function groupCapitalAttacksByRaidPeriod(seasons = [], attacks = []) {
   const periods = new Map();
   for (const season of seasons) {
@@ -94,19 +114,68 @@ export function compactCapitalRaidContext(seasons = [], attacks = []) {
 
 export function compactWarAttackContext(wars = [], attacks = []) {
   const byWar = new Map();
+  const warEndKeys = new Map();
+
   for (const war of wars) {
-    byWar.set(war.war_key, {
-      war_key: war.war_key, state: war.state, start_time: war.start_time, end_time: war.end_time,
-      opponent: war.data?.opponentName ?? war.data?.opponentClanName ?? war.data?.defenderName ?? null,
-      attack_count: 0, attack_data_available: false
-    });
+    const data = war.data ?? {};
+    const clan = data.clan ?? {};
+    const opponent = data.opponent ?? {};
+    const start = parseCoCTimestamp(war.start_time) || parseCoCTimestamp(data.startTime);
+    const end = parseCoCTimestamp(war.end_time) || parseCoCTimestamp(data.endTime);
+    const result = normalizeResult(data.result ?? data.result?.result);
+    const row = {
+      war_key: war.war_key,
+      label: formatWarPeriod(start, end),
+      start_time: start?.toISOString() ?? war.start_time ?? null,
+      end_time: end?.toISOString() ?? war.end_time ?? null,
+      state: war.state,
+      result,
+      opponent: opponent.name ?? data.opponentName ?? data.opponentClanName ?? data.defenderName ?? null,
+      opponent_tag: opponent.tag ?? null,
+      team_size: data.teamSize ?? null,
+      attacks_per_member: data.attacksPerMember ?? null,
+      clan_attacks: clan.attacks ?? null,
+      clan_stars: clan.stars ?? null,
+      clan_destruction_percentage: clan.destructionPercentage ?? null,
+      opponent_attacks: opponent.attacks ?? null,
+      opponent_stars: opponent.stars ?? null,
+      opponent_destruction_percentage: opponent.destructionPercentage ?? null,
+      attack_count: 0,
+      attack_data_available: false
+    };
+    byWar.set(war.war_key, row);
+    if (end) warEndKeys.set(end.toISOString(), war.war_key);
   }
+
   for (const attack of attacks) {
-    const warKey = attack.war_key || attack.data?.war_key;
-    if (warKey && byWar.has(warKey)) byWar.get(warKey).attack_count += 1;
+    const directKey = attack.war_key || attack.data?.war_key;
+    let war = directKey ? byWar.get(directKey) : null;
+
+    // Older syncs could store the warlog row with an unknown start time while
+    // the captured current-war attack row retained the full start/end key.
+    // Match those records by their shared end time instead of dropping the attacks.
+    if (!war) {
+      const end = getWarEndFromKey(directKey);
+      const fallbackKey = end ? warEndKeys.get(end.toISOString()) : null;
+      war = fallbackKey ? byWar.get(fallbackKey) : null;
+    }
+
+    if (war) war.attack_count += 1;
   }
-  for (const row of byWar.values()) row.attack_data_available = row.attack_count > 0;
-  return [...byWar.values()].sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || '')));
+
+  const grouped = [...byWar.values()];
+  for (const row of grouped) row.attack_data_available = row.attack_count > 0;
+
+  return {
+    wars: grouped.sort((a, b) => String(a.start_time || a.end_time || '').localeCompare(String(b.start_time || b.end_time || ''))),
+    totals: {
+      wars: grouped.length,
+      wars_with_attack_data: grouped.filter(w => w.attack_data_available).length,
+      attack_rows_available: grouped.reduce((sum, w) => sum + w.attack_count, 0),
+      wars_without_attack_data: grouped.filter(w => !w.attack_data_available).length
+    },
+    note: 'A warlog entry can exist without individual attack rows. Individual attack data is only available when the currentwar response was captured while the war was active or ended. Missing historical attack rows are reported as unavailable rather than invented.'
+  };
 }
 
 export function compactCwlAttackContext(seasons = [], wars = [], attacks = []) {
