@@ -46,6 +46,7 @@ This project is independent of the existing CoC watcher database. The sync layer
 - Player snapshots for historical trends
 - Sync status/error logging
 - Configurable polling intervals
+- One-time importer for legacy attack-log exports
 
 ### AI retrieval
 Questions are classified before retrieval so the model receives relevant data instead of an uncontrolled database dump.
@@ -81,6 +82,25 @@ The application calculates evidence such as missed attacks and player trends in 
 ### Discord forwarding
 Both `/ask` and `/tell` responses can show a **Forward to AI channel** button. Set `AI_FORWARD_CHANNEL_ID` to the target text-channel ID. The answer is kept temporarily in memory and can only be forwarded by the user who requested it.
 
+## Legacy attack-log import
+
+If you have an older `attack_log` CSV export, do **not** upload the raw CSV into GitHub or commit it to the repository because it can contain player names and tags.
+
+The repository includes a one-time importer that converts the old mixed format into the current split schema:
+
+- `context=capital` → `capital_attacks` plus a lightweight `capital_raids` event record
+- `context=war` → `war_attacks` plus a lightweight `wars` event record
+- Existing rows are safely upserted using the same conflict keys as the live sync, so running the importer again does not intentionally create duplicate attack rows.
+- Missing fields such as historical attack timestamps, war results, or Capital summary totals are left unknown rather than invented.
+
+Run it from the project environment after placing the CSV somewhere accessible to that environment:
+
+```bash
+npm run import:legacy -- /path/to/attack_log_rows.csv
+```
+
+The importer uses `SUPABASE_SERVICE_ROLE_KEY`, so run it only in the trusted sync environment. Never put that key into Discord/client-side code.
+
 ## Environment
 
 Configure:
@@ -88,7 +108,7 @@ Configure:
 - `COC_API_TOKEN`
 - `COC_CLAN_TAG`
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY` — sync only
+- `SUPABASE_SERVICE_ROLE_KEY` — sync and trusted one-time imports only
 - `SUPABASE_ANON_KEY` — Discord/AI read-only access
 - `DISCORD_TOKEN`
 - `DISCORD_CLIENT_ID`
@@ -99,7 +119,7 @@ Configure:
 - `GEMINI_API_KEY` — required for `/tell`
 - optional `GEMINI_MODEL`
 
-Never commit secrets.
+Never commit secrets or raw player data exports.
 
 ## Supabase setup
 
