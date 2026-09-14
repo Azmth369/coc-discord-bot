@@ -21,10 +21,10 @@ export async function getCurrentWar() {
   return data?.[0] ?? null;
 }
 
-export async function searchWars(term, maxRows = 25) {
-  const { data, error } = await db.from('wars').select('war_key,state,start_time,end_time,data').order('end_time', { ascending: false }).limit(100);
+export async function searchWars(term = '', maxRows = 25) {
+  const { data, error } = await db.from('wars').select('war_key,state,start_time,end_time,data').order('end_time', { ascending: false }).limit(200);
   if (error) throw error;
-  const needle = String(term || '').trim().toLowerCase();
+  const needle = String(term).trim().toLowerCase();
   return (data ?? []).filter(w => !needle || JSON.stringify(w.data ?? {}).toLowerCase().includes(needle) || String(w.war_key).toLowerCase().includes(needle)).slice(0, bounded(maxRows, 25, 100));
 }
 
@@ -60,7 +60,7 @@ export async function getCwlSeasons(maxRows = 12) {
   return data ?? [];
 }
 
-export async function getCwlWars(seasonKey, maxRows = 20) {
+export async function getCwlWars(seasonKey = null, maxRows = 20) {
   let q = db.from('cwl_wars').select('season_key,war_tag,opponent_clan_tag,opponent_name,state,data').order('war_tag');
   if (seasonKey) q = q.eq('season_key', seasonKey);
   const { data, error } = await q.limit(bounded(maxRows, 20, 100));
