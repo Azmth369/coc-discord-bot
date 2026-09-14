@@ -121,9 +121,10 @@ async function generateWithModel(model, key, body, attempt = 0) {
     const error = new Error(`Gemini ${res.status}: ${message}`);
     error.status = res.status;
 
-    // 429/5xx are transient according to Google's Gemini API guidance.
-    if ([408, 429, 500, 502, 503, 504].includes(res.status) && attempt < 3) {
-      const delay = 1500 * (2 ** attempt) + Math.floor(Math.random() * 500);
+    // Gemini 429/5xx responses can be transient. Retry briefly before moving
+    // to another model so one overloaded serving pool does not break /ask.
+    if ([408, 429, 500, 502, 503, 504].includes(res.status) && attempt < 2) {
+      const delay = 1200 * (2 ** attempt) + Math.floor(Math.random() * 400);
       console.warn(`[ai] ${model} returned ${res.status}; retrying in ${delay}ms`);
       await sleep(delay);
       return generateWithModel(model, key, body, attempt + 1);
@@ -137,8 +138,16 @@ async function generateWithModel(model, key, body, attempt = 0) {
 
 async function askGemini(question, context) {
   const key = process.env.GEMINI_API_KEY;
-  const configuredModel = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
   if (!key) throw new Error('GEMINI_API_KEY is required');
+
+  const configuredModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  const fallbackModels = [
+    configuredModel,
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.5-flash'
+  ].filter((model, index, list) => model && list.indexOf(model) === index);
 
   const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For Clan Capital questions, treat capital_gold as the member's capital resources looted and stars as attack stars; if the user says "scored" without defining a metric, state which metric you are using. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Prefer targeted context over unrelated records. Keep answers concise, useful, and data-backed.`;
   const body = {
@@ -147,16 +156,23 @@ async function askGemini(question, context) {
     generationConfig: { temperature: 0.15 }
   };
 
-  try {
-    return await generateWithModel(configuredModel, key, body);
-  } catch (error) {
-    const fallbackModel = 'gemini-3.5-flash';
-    if ((error.status === 404 || error.status === 503 || error.status === 502 || error.status === 504) && configuredModel !== fallbackModel) {
-      console.warn(`[ai] ${configuredModel} unavailable; falling back to ${fallbackModel}`);
-      return generateWithModel(fallbackModel, key, body);
+  let lastError;
+  for (const model of fallbackModels) {
+    try {
+      console.log(`[ai] trying Gemini model ${model}`);
+      return await generateWithModel(model, key, body);
+    } catch (error) {
+      lastError = error;
+      const retryable = [408, 429, 500, 502, 503, 504].includes(error.status);
+      if (retryable) {
+        console.warn(`[ai] ${model} unavailable (${error.status}); trying next Gemini model`);
+        continue;
+      }
+      throw error;
     }
-    throw error;
   }
+
+  throw lastError || new Error('No Gemini model was available');
 }
 
 export async function answer(question) {
