@@ -27,7 +27,7 @@ export async function run(job, fn) {
   }
 }
 
-function attacksAvailableFor(state) { return state === 'preparation' ? 0 : 2; }
+function attacksAvailableFor(state) { return state === 'preparation' || state === 'warEnded' || state === 'warlog' ? 0 : 2; }
 
 async function normalizeWar(war, key, stateOverride = null, saveAttackTable = true) {
   const own = war.clan?.tag === clanTag ? war.clan : null;
@@ -115,13 +115,34 @@ export async function syncWar() {
 
 export async function syncHistory() {
   const warlog = await getWarLog();
+  let matchedExisting = 0;
   for (const war of warlog.items ?? []) {
-    const key = warKey(war);
-    await upsert('wars', [{ clan_tag: clanTag, war_key: key, state: 'warlog', start_time: iso(war.startTime), end_time: iso(war.endTime), data: war, synced_at: now() }]);
+    const endTime = iso(war.endTime);
+    const { data: existingRows } = endTime
+      ? await db.from('wars').select('war_key,start_time,end_time,data').eq('clan_tag', clanTag).eq('end_time', endTime).limit(1)
+      : { data: [] };
+    const existing = existingRows?.[0] ?? null;
+    const key = existing?.war_key ?? warKey(war);
+    if (existing) matchedExisting++;
+
+    // Keep the full currentwar snapshot if we already captured this war. The
+    // warlog response is summary-only and must not overwrite start time or
+    // detailed attack/member data captured earlier.
+    const mergedData = { ...(existing?.data ?? {}), ...war };
+    await upsert('wars', [{
+      clan_tag: clanTag,
+      war_key: key,
+      state: existing?.state === 'warEnded' ? 'warEnded' : 'warlog',
+      start_time: existing?.start_time ?? iso(war.startTime),
+      end_time: existing?.end_time ?? endTime,
+      data: mergedData,
+      synced_at: now()
+    }]);
+
     // Ended warlog records are summary-only, so do not try to manufacture attack rows here.
     await normalizeWar({ ...war, state: 'warlog' }, key, 'warlog', false);
   }
-  return { wars: (warlog.items ?? []).length };
+  return { wars: (warlog.items ?? []).length, matched_existing: matchedExisting };
 }
 
 export async function syncCwl() {
