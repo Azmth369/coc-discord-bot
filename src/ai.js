@@ -6,8 +6,8 @@ const MONTHS = /january|february|march|april|may|june|july|august|september|octo
 const WAR = /war|attack|defen|star|opponent|miss|hit|battle/i;
 const CAPITAL = /capital|raid/i;
 const CWL = /cwl|clan war league|league day/i;
-const MEMBER = /member|player|donat|troph|town hall|inactive|role|elder|co-?leader|leader|lowest|highest|who/i;
-const ROLE_NAMES = { leader: 'Leader', coLeader: 'Co-Leader', admin: 'Elder', member: 'Member' };
+const MEMBER = /member|player|donat|troph|town hall|inactive|role|elder|elders|co-?leader|leader|lowest|highest|who|tag/i;
+const ROLE_NAMES = { leader: 'Leader', coleader: 'Co-Leader', admin: 'Elder', member: 'Member' };
 
 function classify(question) {
   const q = question.toLowerCase();
@@ -16,13 +16,44 @@ function classify(question) {
 
 function extractOpponent(question) { const m = question.match(/(?:against|vs\.?|versus)\s+["']?([^"'?.!,]+)["']?/i); return m?.[1]?.trim() || null; }
 function extractPlayerName(question, players) { const normalized = question.toLowerCase(); return [...players].sort((a,b)=>b.name.length-a.name.length).find(p=>normalized.includes(p.name.toLowerCase())) ?? null; }
-function roleLabel(role) { return ROLE_NAMES[role] || role || 'Unknown'; }
-function normalizePlayers(players) { return players.map(p => ({ ...p, role_label: roleLabel(p.role) })); }
-function enrichWarMembers(members) { return members.map(m => ({...m, role_label: roleLabel(m.role), missed_attacks:Math.max(Number(m.attacks_available ?? 0)-Number(m.attacks_used ?? 0),0)})); }
+function normalizeRole(role) {
+  const raw = String(role ?? '').trim().toLowerCase().replace(/[\s_-]/g, '');
+  return ROLE_NAMES[raw] || String(role ?? 'Unknown');
+}
+function normalizePlayers(players) {
+  return players.map(p => ({ ...p, role_label: normalizeRole(p.role) }));
+}
+function enrichWarMembers(members) {
+  return members.map(m => ({...m, role_label: normalizeRole(m.role), missed_attacks:Math.max(Number(m.attacks_available ?? 0)-Number(m.attacks_used ?? 0),0)}));
+}
+function buildMemberSummary(players) {
+  const grouped = { Leader: [], 'Co-Leader': [], Elder: [], Member: [] };
+  for (const p of players) {
+    const label = normalizeRole(p.role);
+    if (!grouped[label]) grouped[label] = [];
+    grouped[label].push({ name: p.name, tag: p.tag, role: p.role, role_label: label });
+  }
+  return {
+    total: players.length,
+    counts: Object.fromEntries(Object.entries(grouped).map(([role, list]) => [role, list.length])),
+    leaders: grouped.Leader,
+    co_leaders: grouped['Co-Leader'],
+    elders: grouped.Elder,
+    members: grouped.Member,
+    role_mapping: "CoC API raw role 'leader' = Leader, 'coLeader' (case-insensitive) = Co-Leader, 'admin' = Elder, 'member' = Member."
+  };
+}
 
 async function buildContext(question) {
   const kind=classify(question), context={retrieval:kind};
   const players=kind.member||kind.history?normalizePlayers(await getPlayers({limit:100})):[]; if(players.length) context.players=players;
+  if (kind.member && players.length) {
+    context.member_summary = buildMemberSummary(players);
+    const q = question.toLowerCase();
+    if (/\belders?\b/.test(q)) context.requested_role = { label: 'Elder', raw_role: 'admin' };
+    else if (/co-?leaders?/.test(q)) context.requested_role = { label: 'Co-Leader', raw_role: 'coLeader' };
+    else if (/\bleaders?\b/.test(q)) context.requested_role = { label: 'Leader', raw_role: 'leader' };
+  }
   const opponent=extractOpponent(question);
 
   if(kind.war){
@@ -92,8 +123,12 @@ async function askGemini(question,context){
   const supported=['gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'];
   const models=[supported.includes(configured)?configured:'gemini-3.8-flash',...supported].filter((m,i,a)=>a.indexOf(m)===i);
   if(configured!==models[0]) console.warn(`[ai] ignoring unsupported/slow Gemini model ${configured}; using ${models[0]}`);
-  const system=`You are a Clash of Clans clan assistant and analyst. You have TWO knowledge sources: (1) supplied database context for clan-specific facts and (2) your own general knowledge for general questions. Use database context whenever the user asks about this clan's members, roles, stats, wars, attacks, history, or other stored clan data. For general questions about Clash of Clans, Discord, chat rules, tagging limits, game mechanics, terminology, or unrelated topics not contained in the database, answer from your own knowledge instead of refusing because the database does not contain the answer. Never invent clan-specific facts. CoC role mapping: leader = Leader, coLeader = Co-Leader, admin = Elder, member = Member. When the user says Elder(s), count/filter role_label='Elder' (equivalently raw role='admin'). Do not call an 'admin' a server/database administrator in this clan context. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. If a general rule or limit may have changed recently and you are not certain, state that it may need verification against current official rules rather than inventing a number. Answer the actual question directly and use your reasoning/calculation ability when appropriate.`;
-  const body={system_instruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT (use when relevant; it is not the only knowledge source):\n${JSON.stringify(context)}`}]}],generationConfig:{thinkingConfig:{thinkingLevel:'low'},maxOutputTokens:1200}};
+  const system=`You are a Clash of Clans clan analyst and general Clash of Clans knowledge assistant. Use the supplied database context for clan-specific facts, member names/tags, roles, statistics, wars, CWL and Capital data. For general Clash of Clans rules, mechanics, limits, terminology, or other facts that are not in the database, use your own general knowledge and reasoning instead of refusing just because the database lacks the information. Clearly distinguish general game knowledge from clan-specific database facts. Never invent clan-specific data.
+
+IMPORTANT ROLE MAPPING: CoC API raw role 'leader' = Leader, 'coLeader' (case-insensitive) = Co-Leader, 'admin' = Elder, 'member' = Member. The database may retain the raw role in role and also provides role_label. For any question asking about Elder(s), use member_summary.elders or count/filter raw role='admin'. For names/tags of elders, return the name and player tag from member_summary.elders. Do not interpret 'admin' as a Discord/server/database administrator in this clan context. The member_summary counts and lists are authoritative for member-role questions; calculate the answer from them rather than guessing.
+
+Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep answers concise, useful, and data-backed.`;
+  const body={system_instruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}]}],generationConfig:{thinkingConfig:{thinkingLevel:'low'},maxOutputTokens:1200}};
   let last;
   for(const model of models){try{console.log(`[ai] trying Gemini model ${model} (low thinking)`);return await generateGemini(model,key,body);}catch(error){last=error;if([404,408,429,500,502,503,504].includes(error.status)){console.warn(`[ai] ${model} unavailable (${error.status}); immediately trying next Gemini model`);continue;}throw error;}}
   throw last||new Error('No Gemini model was available');
@@ -104,8 +139,12 @@ async function askSarvam(question,context){
   if(!key) throw new Error('SARVAM_API_KEY is required for /ask');
   const configured=process.env.SARVAM_MODEL||'sarvam-105b';
   const model=configured==='sarvam-105b-conversations'?'sarvam-105b':configured;
-  const system=`You are a fast Clash of Clans clan assistant and analyst. You have TWO knowledge sources: (1) supplied database context for clan-specific facts and (2) your own general knowledge for general questions. Use database context whenever the user asks about this clan's members, roles, stats, wars, attacks, history, or other stored clan data. For general questions about Clash of Clans, Discord, chat rules, tagging limits, game mechanics, terminology, or unrelated topics not contained in the database, answer from your own knowledge instead of refusing because the database does not contain the answer. Never invent clan-specific facts. CoC role mapping: leader = Leader, coLeader = Co-Leader, admin = Elder, member = Member. When the user says Elder(s), count/filter role_label='Elder' (equivalently raw role='admin'). Do not call an 'admin' a server/database administrator in this clan context. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. If a general rule or limit may have changed recently and you are not certain, state that it may need verification against current official rules rather than inventing a number. Answer the actual question directly and use your reasoning/calculation ability when appropriate.`;
-  const body={model,messages:[{role:'system',content:system},{role:'user',content:`${question}\n\nDATABASE CONTEXT (use when relevant; it is not the only knowledge source):\n${JSON.stringify(context)}`}],temperature:0.15,reasoning_effort:null,max_tokens:800};
+  const system=`You are a fast Clash of Clans clan analyst and general Clash of Clans knowledge assistant. Use the supplied database context for clan-specific facts, member names/tags, roles, statistics, wars, CWL and Capital data. For general Clash of Clans rules, mechanics, limits, terminology, or other facts that are not in the database, use your own general knowledge and reasoning instead of refusing just because the database lacks the information. Clearly distinguish general game knowledge from clan-specific database facts. Never invent clan-specific data.
+
+IMPORTANT ROLE MAPPING: CoC API raw role 'leader' = Leader, 'coLeader' (case-insensitive) = Co-Leader, 'admin' = Elder, 'member' = Member. The database may retain the raw role in role and also provides role_label. For any question asking about Elder(s), use member_summary.elders or count/filter raw role='admin'. For names/tags of elders, return the name and player tag from member_summary.elders. Do not interpret 'admin' as a Discord/server/database administrator in this clan context. The member_summary counts and lists are authoritative for member-role questions; calculate the answer from them rather than guessing.
+
+Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep the response concise, clear, and data-backed.`;
+  const body={model,messages:[{role:'system',content:system},{role:'user',content:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}],temperature:0.15,reasoning_effort:null,max_tokens:800};
   const res=await fetch('https://api.sarvam.ai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','api-subscription-key':key},body:JSON.stringify(body)});
   if(!res.ok){const message=await res.text();const error=new Error(`Sarvam ${res.status}: ${message}`);error.status=res.status;throw error;}
   const json=await res.json();
