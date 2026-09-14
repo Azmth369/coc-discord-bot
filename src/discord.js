@@ -10,6 +10,14 @@ import {
   SlashCommandBuilder
 } from 'discord.js';
 import { answer, tell } from './ai.js';
+import {
+  attachAiAnswerMessage,
+  cleanupAiState,
+  createAiAnswer,
+  getAiAnswer,
+  getConversationTurns,
+  saveConversationTurn
+} from './aiState.js';
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -19,9 +27,8 @@ const ponyoAlertChannelId = process.env.PONYO_ALERT_CHANNEL_ID;
 if (!token || !clientId) throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID are required');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-const pendingAnswers = new Map();
-const conversationMemory = new Map();
-const ANSWER_TTL_MS = 24 * 60 * 60 * 1000;
+const fallbackAnswers = new Map();
+const fallbackConversationMemory = new Map();
 const MEMORY_TTL_MS = 60 * 60 * 1000;
 const MAX_MEMORY_TURNS = 5;
 const PAGINATION_THRESHOLD = 1800;
@@ -112,10 +119,10 @@ function memoryKey(interaction) {
   return `${interaction.guildId || 'dm'}:${interaction.channelId || 'unknown'}:${interaction.user.id}`;
 }
 
-function getConversationContext(key) {
-  const entry = conversationMemory.get(key);
+function fallbackMemoryTurns(key) {
+  const entry = fallbackConversationMemory.get(key);
   if (!entry || entry.expiresAt < Date.now()) {
-    conversationMemory.delete(key);
+    fallbackConversationMemory.delete(key);
     return [];
   }
   return entry.turns;
@@ -129,29 +136,48 @@ function buildContextualQuestion(question, turns) {
   return `RECENT CONVERSATION CONTEXT (use this only to resolve follow-ups such as they/them/their/those/that player/that war; answer the CURRENT QUESTION, not the old questions):\n${history}\n\nCURRENT QUESTION: ${question}`;
 }
 
-function rememberConversation(key, question, answerText) {
-  const existing = getConversationContext(key);
-  const turns = [...existing, {
+function rememberFallbackConversation(key, question, answerText) {
+  const turns = [...fallbackMemoryTurns(key), {
     question,
     answer: String(answerText || '').slice(0, 4000)
   }].slice(-MAX_MEMORY_TURNS);
-  conversationMemory.set(key, { turns, expiresAt: Date.now() + MEMORY_TTL_MS });
+  fallbackConversationMemory.set(key, { turns, expiresAt: Date.now() + MEMORY_TTL_MS });
 }
 
-function rememberAnswer(question, result, userId, provider, elapsed) {
-  const id = `${userId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-  pendingAnswers.set(id, { question, result, userId, provider, elapsed, page: 0, expiresAt: Date.now() + ANSWER_TTL_MS });
-  setTimeout(() => pendingAnswers.delete(id), ANSWER_TTL_MS).unref?.();
-  return id;
+function rememberFallbackAnswer(id, question, result, userId, provider, elapsed) {
+  fallbackAnswers.set(id, {
+    id,
+    question,
+    full_answer: String(result || ''),
+    user_id: userId,
+    provider,
+    elapsed,
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000
+  });
+}
+
+function getFallbackAnswer(id, userId) {
+  const saved = fallbackAnswers.get(id);
+  if (!saved || saved.expiresAt < Date.now() || saved.user_id !== userId) {
+    if (saved?.expiresAt < Date.now()) fallbackAnswers.delete(id);
+    return null;
+  }
+  return saved;
 }
 
 function viewerRow(id, page, total) {
   const row = new ActionRowBuilder();
   if (page > 0) {
-    row.addComponents(new ButtonBuilder().setCustomId(`ai-page:${id}:less`).setLabel('See less').setStyle(ButtonStyle.Secondary));
+    row.addComponents(new ButtonBuilder()
+      .setCustomId(`ai-page:${id}:${page}:less`)
+      .setLabel('See less')
+      .setStyle(ButtonStyle.Secondary));
   }
   if (page < total - 1) {
-    row.addComponents(new ButtonBuilder().setCustomId(`ai-page:${id}:more`).setLabel('See more').setStyle(ButtonStyle.Secondary));
+    row.addComponents(new ButtonBuilder()
+      .setCustomId(`ai-page:${id}:${page}:more`)
+      .setLabel('See more')
+      .setStyle(ButtonStyle.Secondary));
   }
   return row;
 }
@@ -244,15 +270,66 @@ async function handleAiCommand(interaction, provider, generator) {
   try {
     question = interaction.options.getString('question', true).trim();
     const key = memoryKey(interaction);
-    const turns = getConversationContext(key);
+
+    let turns;
+    try {
+      turns = await getConversationTurns({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        userId: interaction.user.id,
+        limit: MAX_MEMORY_TURNS
+      });
+    } catch (stateError) {
+      console.error('[discord] persistent conversation lookup failed; using RAM fallback', stateError);
+      turns = fallbackMemoryTurns(key);
+    }
+
     const contextualQuestion = buildContextualQuestion(question, turns);
     const result = await generator(contextualQuestion);
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-    rememberConversation(key, question, result);
+
+    try {
+      await saveConversationTurn({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        userId: interaction.user.id,
+        provider,
+        question,
+        answer: result
+      });
+    } catch (stateError) {
+      console.error('[discord] persistent conversation save failed; using RAM fallback', stateError);
+      rememberFallbackConversation(key, question, result);
+    }
+
     const chunks = splitDiscordMessage(result);
-    const id = rememberAnswer(question, result, interaction.user.id, provider, elapsed);
-    const components = chunks.length > 1 ? [viewerRow(id, 0, chunks.length)] : [];
-    await interaction.editReply({ content: pageContent(provider, elapsed, chunks, 0), components });
+    let answerId;
+    try {
+      const saved = await createAiAnswer({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        userId: interaction.user.id,
+        provider,
+        question,
+        result
+      });
+      answerId = saved.id;
+    } catch (stateError) {
+      console.error('[discord] persistent AI answer save failed; using RAM fallback', stateError);
+      answerId = `${interaction.user.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+      rememberFallbackAnswer(answerId, question, result, interaction.user.id, provider, elapsed);
+    }
+
+    const components = chunks.length > 1 ? [viewerRow(answerId, 0, chunks.length)] : [];
+    const sent = await interaction.editReply({ content: pageContent(provider, elapsed, chunks, 0), components });
+
+    if (!String(answerId).includes(':')) {
+      try {
+        await attachAiAnswerMessage(answerId, sent.id);
+      } catch (stateError) {
+        console.error('[discord] failed to attach Discord message id to persistent AI answer', stateError);
+      }
+    }
   } catch (error) {
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     const classification = classifyProviderError(provider, error);
@@ -276,49 +353,52 @@ client.on('interactionCreate', async interaction => {
 
   if (!interaction.isButton() || !interaction.customId.startsWith('ai-page:')) return;
 
-  // The answer id itself contains ':' characters (userId:timestamp:random).
-  // Split only around the known prefix and the final direction so older
-  // messages generated before this fix continue to work too.
-  const payload = interaction.customId.slice('ai-page:'.length);
-  const separator = payload.lastIndexOf(':');
-  if (separator === -1) {
-    await interaction.reply({ content: 'That AI answer button is invalid. Ask the question again.', ephemeral: true });
-    return;
-  }
-  const id = payload.slice(0, separator);
-  const direction = payload.slice(separator + 1);
-
-  if (direction !== 'more' && direction !== 'less') {
+  const parts = interaction.customId.split(':');
+  if (parts.length !== 4) {
     await interaction.reply({ content: 'That AI answer button is invalid. Ask the question again.', ephemeral: true });
     return;
   }
 
-  const saved = pendingAnswers.get(id);
-  if (!saved || saved.expiresAt < Date.now()) {
-    await interaction.reply({ content: 'That AI answer has expired. Ask the question again.', ephemeral: true });
-    return;
-  }
-  if (saved.userId !== interaction.user.id) {
-    await interaction.reply({ content: 'Only the person who asked this question can expand or collapse its answer.', ephemeral: true });
+  const [, id, pageText, direction] = parts;
+  const currentPage = Number(pageText);
+  if (!Number.isInteger(currentPage) || !['more', 'less'].includes(direction)) {
+    await interaction.reply({ content: 'That AI answer button is invalid. Ask the question again.', ephemeral: true });
     return;
   }
 
-  const chunks = splitDiscordMessage(saved.result);
-  const current = Number(saved.page || 0);
+  let saved;
+  try {
+    saved = await getAiAnswer(id, interaction.user.id);
+  } catch (stateError) {
+    console.error('[discord] persistent AI answer lookup failed; checking RAM fallback', stateError);
+    saved = null;
+  }
+  saved ??= getFallbackAnswer(id, interaction.user.id);
+
+  if (!saved) {
+    await interaction.reply({ content: 'That AI answer is no longer available. Ask the question again.', ephemeral: true });
+    return;
+  }
+
+  const chunks = splitDiscordMessage(saved.full_answer);
   const delta = direction === 'more' ? 1 : -1;
-  const page = Math.max(0, Math.min(chunks.length - 1, current + delta));
-  saved.page = page;
-  saved.expiresAt = Date.now() + ANSWER_TTL_MS;
+  const page = Math.max(0, Math.min(chunks.length - 1, currentPage + delta));
+
   await interaction.update({
-    content: pageContent(saved.provider, saved.elapsed || '—', chunks, page),
-    components: [viewerRow(id, page, chunks.length)]
+    content: pageContent(saved.provider, '—', chunks, page),
+    components: chunks.length > 1 ? [viewerRow(id, page, chunks.length)] : []
   });
 });
 
 setInterval(() => {
   const now = Date.now();
-  for (const [key, value] of conversationMemory) if (value.expiresAt < now) conversationMemory.delete(key);
+  for (const [key, value] of fallbackConversationMemory) if (value.expiresAt < now) fallbackConversationMemory.delete(key);
+  for (const [key, value] of fallbackAnswers) if (value.expiresAt < now) fallbackAnswers.delete(key);
 }, 10 * 60 * 1000).unref?.();
+
+setInterval(() => {
+  cleanupAiState().catch(error => console.error('[discord] AI state cleanup failed', error));
+}, 6 * 60 * 60 * 1000).unref?.();
 
 await registerCommands();
 await client.login(token);
