@@ -121,8 +121,6 @@ async function generateWithModel(model, key, body, attempt = 0) {
     const error = new Error(`Gemini ${res.status}: ${message}`);
     error.status = res.status;
 
-    // Gemini 429/5xx responses can be transient. Retry briefly before moving
-    // to another model so one overloaded serving pool does not break /ask.
     if ([408, 429, 500, 502, 503, 504].includes(res.status) && attempt < 2) {
       const delay = 1200 * (2 ** attempt) + Math.floor(Math.random() * 400);
       console.warn(`[ai] ${model} returned ${res.status}; retrying in ${delay}ms`);
@@ -163,8 +161,8 @@ async function askGemini(question, context) {
       return await generateWithModel(model, key, body);
     } catch (error) {
       lastError = error;
-      const retryable = [408, 429, 500, 502, 503, 504].includes(error.status);
-      if (retryable) {
+      const nextModel = [404, 408, 429, 500, 502, 503, 504].includes(error.status);
+      if (nextModel) {
         console.warn(`[ai] ${model} unavailable (${error.status}); trying next Gemini model`);
         continue;
       }
