@@ -6,15 +6,23 @@ const MONTHS = /january|february|march|april|may|june|july|august|september|octo
 const WAR = /war|attack|defen|star|opponent|miss|hit|battle/i;
 const CAPITAL = /capital|raid/i;
 const CWL = /cwl|clan war league|league day/i;
-const MEMBER = /member|player|donat|troph|town hall|inactive|role|lowest|highest|who/i;
-function classify(question) { const q = question.toLowerCase(); return { member: MEMBER.test(q), war: WAR.test(q), capital: CAPITAL.test(q), cwl: CWL.test(q), history: MONTHS.test(q) }; }
+const MEMBER = /member|player|donat|troph|town hall|inactive|role|elder|co-?leader|leader|lowest|highest|who/i;
+const ROLE_NAMES = { leader: 'Leader', coLeader: 'Co-Leader', admin: 'Elder', member: 'Member' };
+
+function classify(question) {
+  const q = question.toLowerCase();
+  return { member: MEMBER.test(q), war: WAR.test(q), capital: CAPITAL.test(q), cwl: CWL.test(q), history: MONTHS.test(q) };
+}
+
 function extractOpponent(question) { const m = question.match(/(?:against|vs\.?|versus)\s+["']?([^"'?.!,]+)["']?/i); return m?.[1]?.trim() || null; }
 function extractPlayerName(question, players) { const normalized = question.toLowerCase(); return [...players].sort((a,b)=>b.name.length-a.name.length).find(p=>normalized.includes(p.name.toLowerCase())) ?? null; }
-function enrichWarMembers(members) { return members.map(m => ({...m, missed_attacks:Math.max(Number(m.attacks_available ?? 0)-Number(m.attacks_used ?? 0),0)})); }
+function roleLabel(role) { return ROLE_NAMES[role] || role || 'Unknown'; }
+function normalizePlayers(players) { return players.map(p => ({ ...p, role_label: roleLabel(p.role) })); }
+function enrichWarMembers(members) { return members.map(m => ({...m, role_label: roleLabel(m.role), missed_attacks:Math.max(Number(m.attacks_available ?? 0)-Number(m.attacks_used ?? 0),0)})); }
 
 async function buildContext(question) {
   const kind=classify(question), context={retrieval:kind};
-  const players=kind.member||kind.history?await getPlayers({limit:100}):[]; if(players.length) context.players=players;
+  const players=kind.member||kind.history?normalizePlayers(await getPlayers({limit:100})):[]; if(players.length) context.players=players;
   const opponent=extractOpponent(question);
 
   if(kind.war){
@@ -54,7 +62,7 @@ async function buildContext(question) {
     context.historical_cwl_attacks=await getCwlAttacks({attackerTag:player?.tag,limit:300});
     context.historical_capital_attacks=await getCapitalAttacks({attackerTag:player?.tag,limit:300});
   }
-  if(Object.keys(context).length===1){context.players=players.length?players:await getPlayers({limit:100}); context.current_war=await getCurrentWar();}
+  if(Object.keys(context).length===1){context.players=players.length?players:normalizePlayers(await getPlayers({limit:100})); context.current_war=await getCurrentWar();}
   return context;
 }
 
@@ -84,7 +92,7 @@ async function askGemini(question,context){
   const supported=['gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'];
   const models=[supported.includes(configured)?configured:'gemini-3.8-flash',...supported].filter((m,i,a)=>a.indexOf(m)===i);
   if(configured!==models[0]) console.warn(`[ai] ignoring unsupported/slow Gemini model ${configured}; using ${models[0]}`);
-  const system=`You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. Calculate rankings from supplied values. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep answers concise, useful, and data-backed.`;
+  const system=`You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. Calculate rankings and exact counts from supplied values. IMPORTANT ROLE MAPPING: CoC role 'leader' = Leader, 'coLeader' = Co-Leader, 'admin' = Elder, 'member' = Member. The database may retain the raw CoC role in the role field and also provides role_label; when the user says Elder(s), count/filter role_label='Elder' (equivalently raw role='admin'). Do not call an 'admin' a server/database administrator in this clan context. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep answers concise, useful, and data-backed.`;
   const body={system_instruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}]}],generationConfig:{thinkingConfig:{thinkingLevel:'low'},maxOutputTokens:1200}};
   let last;
   for(const model of models){try{console.log(`[ai] trying Gemini model ${model} (low thinking)`);return await generateGemini(model,key,body);}catch(error){last=error;if([404,408,429,500,502,503,504].includes(error.status)){console.warn(`[ai] ${model} unavailable (${error.status}); immediately trying next Gemini model`);continue;}throw error;}}
@@ -96,7 +104,7 @@ async function askSarvam(question,context){
   if(!key) throw new Error('SARVAM_API_KEY is required for /ask');
   const configured=process.env.SARVAM_MODEL||'sarvam-105b';
   const model=configured==='sarvam-105b-conversations'?'sarvam-105b':configured;
-  const system=`You are a fast Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent stats, attacks, wars, dates, opponents, or outcomes. Distinguish current from historical data. Calculate rankings from supplied values. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep the response concise, clear, and data-backed.`;
+  const system=`You are a fast Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent stats, attacks, wars, dates, opponents, or outcomes. Distinguish current from historical data. Calculate rankings and exact counts from supplied values. IMPORTANT ROLE MAPPING: CoC role 'leader' = Leader, 'coLeader' = Co-Leader, 'admin' = Elder, 'member' = Member. The database may retain the raw CoC role in the role field and also provides role_label; when the user says Elder(s), count/filter role_label='Elder' (equivalently raw role='admin'). Do not call an 'admin' a server/database administrator in this clan context. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep the response concise, clear, and data-backed.`;
   const body={model,messages:[{role:'system',content:system},{role:'user',content:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}],temperature:0.15,reasoning_effort:null,max_tokens:800};
   const res=await fetch('https://api.sarvam.ai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','api-subscription-key':key},body:JSON.stringify(body)});
   if(!res.ok){const message=await res.text();const error=new Error(`Sarvam ${res.status}: ${message}`);error.status=res.status;throw error;}
