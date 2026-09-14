@@ -275,7 +275,24 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (!interaction.isButton() || !interaction.customId.startsWith('ai-page:')) return;
-  const [, id, direction] = interaction.customId.split(':');
+
+  // The answer id itself contains ':' characters (userId:timestamp:random).
+  // Split only around the known prefix and the final direction so older
+  // messages generated before this fix continue to work too.
+  const payload = interaction.customId.slice('ai-page:'.length);
+  const separator = payload.lastIndexOf(':');
+  if (separator === -1) {
+    await interaction.reply({ content: 'That AI answer button is invalid. Ask the question again.', ephemeral: true });
+    return;
+  }
+  const id = payload.slice(0, separator);
+  const direction = payload.slice(separator + 1);
+
+  if (direction !== 'more' && direction !== 'less') {
+    await interaction.reply({ content: 'That AI answer button is invalid. Ask the question again.', ephemeral: true });
+    return;
+  }
+
   const saved = pendingAnswers.get(id);
   if (!saved || saved.expiresAt < Date.now()) {
     await interaction.reply({ content: 'That AI answer has expired. Ask the question again.', ephemeral: true });
