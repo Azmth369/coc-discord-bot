@@ -5,7 +5,7 @@ import { db } from './db.js';
 const ANSWER_TTL_DAYS = 30;
 const CONVERSATION_TTL_MS = 60 * 60 * 1000;
 
-export async function createAiAnswer({ guildId, channelId, userId, provider, question, result, elapsed }) {
+export async function createAiAnswer({ guildId, channelId, userId, provider, question, result }) {
   const id = randomUUID();
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + ANSWER_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -17,7 +17,6 @@ export async function createAiAnswer({ guildId, channelId, userId, provider, que
     provider,
     question,
     full_answer: String(result || ''),
-    elapsed_seconds: elapsed || null,
     created_at: createdAt.toISOString(),
     expires_at: expiresAt.toISOString()
   });
@@ -36,7 +35,7 @@ export async function attachAiAnswerMessage(id, messageId) {
 export async function getAiAnswer(id, userId) {
   const { data, error } = await db
     .from('ai_answers')
-    .select('id,user_id,provider,question,full_answer,elapsed_seconds,created_at,expires_at')
+    .select('id,user_id,provider,question,full_answer,created_at,expires_at')
     .eq('id', id)
     .eq('user_id', userId)
     .gt('expires_at', new Date().toISOString())
