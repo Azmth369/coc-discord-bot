@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { getPlayers, getCurrentWar, searchWars, getSnapshots, getCapitalSeasons, getCwlSeasons } from './retrieval.js';
+import { getPlayers, getCurrentWar, searchWars, getSnapshots, getCapitalSeasons, getCwlSeasons, getWarAttacks, getWarMembers } from './retrieval.js';
 
 const MONTHS = /january|february|march|april|may|june|july|august|september|october|november|december|month|year|trend|history|improv|declin/i;
 const WAR = /war|attack|defen|star|opponent|miss|hit|battle/i;
@@ -9,13 +9,7 @@ const MEMBER = /member|player|donat|troph|town hall|inactive|role|lowest|highest
 
 function classify(question) {
   const q = question.toLowerCase();
-  return {
-    member: MEMBER.test(q),
-    war: WAR.test(q),
-    capital: CAPITAL.test(q),
-    cwl: CWL.test(q),
-    history: MONTHS.test(q)
-  };
+  return { member: MEMBER.test(q), war: WAR.test(q), capital: CAPITAL.test(q), cwl: CWL.test(q), history: MONTHS.test(q) };
 }
 
 function extractOpponent(question) {
@@ -27,18 +21,30 @@ async function buildContext(question) {
   const kind = classify(question);
   const context = { retrieval: kind };
 
-  // Start narrow. Expand only for concepts explicitly present in the question.
   if (kind.member) context.players = await getPlayers({ limit: 100 });
+
   if (kind.war) {
     const current = await getCurrentWar();
     context.current_war = current;
+    if (current?.war_key) {
+      context.current_war_members = await getWarMembers(current.war_key);
+      context.current_war_attacks = await getWarAttacks(current.war_key);
+    }
     const opponent = extractOpponent(question);
-    context.wars = opponent ? await searchWars(opponent, 25) : await searchWars('war', 25);
+    context.wars = await searchWars(opponent, 25);
+    // For a named opponent, include normalized attacks from matching wars.
+    if (opponent && context.wars.length) {
+      context.war_details = [];
+      for (const war of context.wars.slice(0, 5)) {
+        context.war_details.push({ war, members: await getWarMembers(war.war_key), attacks: await getWarAttacks(war.war_key) });
+      }
+    }
   }
+
   if (kind.capital) context.capital_raids = await getCapitalSeasons(12);
   if (kind.cwl) context.cwl = await getCwlSeasons(12);
+
   if (kind.history) {
-    // Snapshots are expensive, so only fetch them when a specific player is named.
     const playerName = question.match(/(?:player|member)\s+([A-Za-z0-9_.@-]+)/i)?.[1];
     if (playerName) {
       const players = await getPlayers({ limit: 100 });
@@ -59,12 +65,8 @@ async function askGemini(question, context) {
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   if (!key) throw new Error('GEMINI_API_KEY is required');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-  const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show the key numbers. For missed attacks, only call an attack missed when the supplied war data proves the player had an available attack and no corresponding attack exists. Keep answers concise and useful.`;
-  const body = {
-    system_instruction: { parts: [{ text: system }] },
-    contents: [{ role: 'user', parts: [{ text: `${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }] }],
-    generationConfig: { temperature: 0.15 }
-  };
+  const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For missed attacks, only identify a missed attack when the supplied war member data shows an available attack was not used. When comparing wars, name the opponent and date when supplied. Keep answers concise and useful.`;
+  const body = { system_instruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: `${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }] }], generationConfig: { temperature: 0.15 } };
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
   const json = await res.json();
