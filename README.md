@@ -28,8 +28,6 @@ Clash of Clans API
                            ▼
                         Discord
                  /ask            /tell
-                           │
-                           └── Forward button → configured AI channel
 ```
 
 This project is independent of the existing CoC watcher database. The sync layer owns the CoC API and Supabase service-role credentials; Discord/AI only reads through the anonymous/read-only key.
@@ -93,8 +91,10 @@ Users receive a short safe message with the recommended alternative (`/tell` for
 ### Deterministic analytics
 The application calculates evidence such as missed attacks and player trends in code before AI interpretation. This reduces hallucination risk for straightforward numerical questions.
 
-### Discord forwarding
-Both `/ask` and `/tell` responses can show a **Forward to AI channel** button. Set `AI_FORWARD_CHANNEL_ID` to the target text-channel ID. The answer is kept temporarily in memory and can only be forwarded by the user who requested it.
+### Long-answer controls
+Long AI responses are split into Discord-safe chunks. Instead of the old **Previous/Next** pagination and custom forwarding button, the response now uses **See more** and **See less** controls. Only the user who asked the question can expand or collapse that answer. The saved answer remains available for 24 hours in the bot process.
+
+For sharing an answer to another Discord channel, use Discord's built-in message forwarding feature.
 
 ## Legacy attack-log import
 
@@ -127,7 +127,6 @@ Configure:
 - `DISCORD_TOKEN`
 - `DISCORD_CLIENT_ID`
 - optional `DISCORD_GUILD_ID` for instant guild command registration
-- optional `AI_FORWARD_CHANNEL_ID`
 - optional `PONYO_ALERT_CHANNEL_ID` — private Discord channel for detailed AI provider/quota/API failure alerts
 - `SARVAM_API_KEY` — required for `/ask`
 - optional `SARVAM_MODEL` (defaults to `sarvam-105b`)
