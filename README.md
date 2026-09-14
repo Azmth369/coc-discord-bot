@@ -1,136 +1,132 @@
-# Clash of Clans Discord Bot
+# Clash of Clans Discord AI Bot
 
-A dedicated Discord assistant that combines **Clash of Clans API data, a separate Supabase database, intelligent retrieval, and AI-powered answers**.
+A production-oriented Discord assistant combining **Clash of Clans API data, a dedicated Supabase database, targeted retrieval, deterministic analytics, and Gemini AI**.
 
 ## Architecture
 
 ```text
-                 ┌──────────────────────┐
-                 │ Clash of Clans API   │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │   Sync Service       │
-                 │   (write access)     │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │  Dedicated Supabase   │
-                 │ current + historical │
-                 │       data           │
-                 └──────────┬───────────┘
-                            │ read-only
-                            ▼
-                 ┌──────────────────────┐
-                 │    AI Retrieval      │
-                 │ keyword/context      │
-                 │       routing        │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │    Discord Bot       │
-                 │       /ask           │
-                 └──────────────────────┘
+Clash of Clans API
+        │
+        ▼
+ Sync scheduler ──────► Dedicated Supabase
+  (write key)             │
+                          │ read-only
+                          ▼
+                  Retrieval + Analytics
+                          │
+                          ▼
+                    Gemini AI core
+                          │
+                          ▼
+                     Discord /ask
+                          │
+                          └── Forward button → configured AI channel
 ```
 
-The Discord/AI runtime is intentionally separate from the existing CoC watcher system. The sync process owns the CoC API credentials and writes to this project's database. The Discord/AI runtime uses the database through a read-only key and cannot modify production data.
+This project is independent of the existing CoC watcher database. The sync layer owns the CoC API and Supabase service-role credentials; Discord/AI only reads through the anonymous/read-only key.
 
-## Current implementation
+## Features
 
-### Data layer
+### Data collection
+- Clan/member data
+- Current war polling
+- War-log history
+- Normalized war members and attacks
+- CWL seasons, rounds, individual CWL wars, members and attacks
+- Capital raid seasons
+- Player snapshots for historical trends
+- Sync status/error logging
+- Configurable polling intervals
 
-- Clan and member synchronization from the CoC API
-- Current-war synchronization
-- War-log synchronization
-- Capital raid synchronization
-- Player snapshots for historical analysis
-- CWL table/schema reserved for the next sync phase
-- Sync run status/error logging
-
-### AI layer
-
-The AI does not blindly send the whole database to the model. It first classifies the question and loads the smallest useful context, expanding into history when the question requires trends or past activity.
+### AI retrieval
+Questions are classified before retrieval so the model receives relevant data instead of an uncontrolled database dump.
 
 Examples:
 
 ```text
-"who has the lowest donations?"
-        ↓
-member context
-
-"who didn't attack in the current war?"
-        ↓
-war + member context
-
-"how did our activity change in March?"
-        ↓
-member + historical snapshot context
+/ask question:"who has the lowest donations?"
+/ask question:"who didn't attack in the current war?"
+/ask question:"how are we doing in the current war?"
+/ask question:"summarize our wars against Dark Land"
+/ask question:"show me the attacks from our war against XYZ"
+/ask question:"what happened in March 2026?"
 ```
 
-The model is instructed to answer only from the supplied context and to explicitly state when the database does not contain enough evidence.
+Retrieval follows the intended safe-expansion strategy:
 
-### Discord
+1. Match the question to a data domain.
+2. Retrieve the narrowest useful context.
+3. If a named opponent search returns nothing, expand to recent war history.
+4. Give Gemini only the resulting context.
+5. Gemini must never invent missing statistics, attacks, dates, opponents or outcomes.
 
-The first command is:
+### Deterministic analytics
+The application calculates evidence such as missed attacks and player trends in code before AI interpretation. This reduces hallucination risk for straightforward numerical questions.
 
-```text
-/ask question:<your question>
-```
+### Discord forwarding
+`/ask` responses can show a **Forward to AI channel** button. Set `AI_FORWARD_CHANNEL_ID` to the target text-channel ID. The answer is kept temporarily in memory and can only be forwarded by the user who requested it.
 
-The command handles Discord's message-length limit by splitting longer answers into multiple messages.
+## Environment
 
-## Running
+Copy `.env.example` into your hosting environment and configure:
 
-Install dependencies:
+- `COC_API_TOKEN`
+- `COC_CLAN_TAG`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` — sync only
+- `SUPABASE_ANON_KEY` — Discord/AI read-only access
+- `DISCORD_TOKEN`
+- `DISCORD_CLIENT_ID`
+- optional `DISCORD_GUILD_ID` for instant guild command registration
+- optional `AI_FORWARD_CHANNEL_ID`
+- `GEMINI_API_KEY`
+
+Never commit secrets.
+
+## Supabase setup
+
+Create a **separate Supabase project** for this bot and run `supabase/schema.sql` in its SQL editor.
+
+The schema enables RLS and provides `anon` SELECT policies for the AI data tables. The service-role key is used only by the synchronization process and must never be placed in Discord or client-side code.
+
+## Run locally
 
 ```bash
 npm install
-```
-
-Create your local environment file from `.env.example` and fill in the secrets.
-
-Run the Discord bot:
-
-```bash
 npm start
 ```
 
-Run the synchronization service:
+`npm start` launches both the Discord bot and sync scheduler. A lightweight HTTP health endpoint is available at `/health` on `PORT` (default `3000`), which is useful for Replit-style deployments.
+
+Run only the sync scheduler:
 
 ```bash
 npm run sync
 ```
 
-For production, run the bot and sync process as separate processes/services so a Discord restart does not stop data collection and vice versa.
+Run one complete sync pass:
 
-## Supabase setup
+```bash
+npm run sync:once
+```
 
-Run `supabase/schema.sql` in the **separate Supabase project** created for this bot.
+## Replit deployment
 
-Do not give the Discord/AI process the `SUPABASE_SERVICE_ROLE_KEY`. The service-role key is only for synchronization. The AI/Discord side is designed to use the anonymous or a dedicated read-only key with appropriate database policies.
+The repository includes `.replit` configuration and uses `npm start` as the production command. Add the environment variables as Replit Secrets, then deploy the project as a long-running service.
 
-## Secrets
+## Security model
 
-Never commit:
+```text
+CoC API token ──► sync service ──write──► Supabase
+                                         ▲
+                                         │
+                           read-only anon key
+                                         │
+                                  AI + Discord
+```
 
-- CoC API tokens
-- Discord bot tokens
-- Supabase service-role keys
-- AI API keys
+Do not give the Discord bot the Supabase service-role key.
 
-Use environment variables or your hosting platform's secret manager.
+## Current status
 
-## Roadmap
-
-1. Complete robust CoC synchronization, including CWL and richer war/attack records.
-2. Add structured AI retrieval tools for wars, attacks, players, capital raids, and historical trends.
-3. Add Discord channel/category routing for selected AI responses.
-4. Add permissions and leader-only/admin commands.
-5. Add scheduled summaries and automatic war/CWL alerts.
-
-## Project status
-
-🚧 **Foundation in active development**
+The repository contains the core sync, database, retrieval, analytics, AI, Discord forwarding, and Replit runtime pieces. Live deployment still requires the user's own API keys, Discord application configuration, and separate Supabase project/schema setup.
