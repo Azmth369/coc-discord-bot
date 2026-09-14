@@ -56,7 +56,7 @@ async function normalizeWar(war, key, stateOverride = null) {
         stars: a.stars ?? null,
         destruction_percentage: a.destructionPercentage ?? null,
         order_no: a.order ?? null,
-        attack_time: iso(a.duration ? null : a.attackTime),
+        attack_time: iso(a.attackTime),
         data: a
       });
     }
@@ -99,8 +99,7 @@ async function syncWar() {
     clan_tag: clanTag, war_key: key, state: war.state ?? null,
     start_time: iso(war.startTime), end_time: iso(war.endTime), data: war, synced_at: new Date().toISOString()
   }]);
-  const normalized = await normalizeWar(war, key);
-  return { state: war.state, warKey: key, ...normalized };
+  return { state: war.state, warKey: key, ...(await normalizeWar(war, key)) };
 }
 
 async function syncHistory() {
@@ -124,8 +123,7 @@ async function syncCwl() {
       if (!warTag || warTag === '#0') continue;
       try {
         const war = await getCwlWar(warTag);
-        const own = war.clan?.tag === clanTag ? war.clan : null;
-        const opponent = war.opponent?.tag === clanTag ? war.clan : war.opponent;
+        const opponent = war.clan?.tag === clanTag ? war.opponent : war.clan;
         await upsert('cwl_wars', [{
           season_key: seasonKey,
           war_tag: warTag,
