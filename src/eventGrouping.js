@@ -156,16 +156,11 @@ export function compactWarAttackContext(wars = [], attacks = []) {
   for (const attack of attacks) {
     const directKey = attack.war_key || attack.data?.war_key;
     let war = directKey ? byWar.get(directKey) : null;
-
-    // Older syncs could store the warlog row with an unknown start time while
-    // the captured current-war attack row retained the full start/end key.
-    // Match those records by their shared end time instead of dropping the attacks.
     if (!war) {
       const end = getWarEndFromKey(directKey);
       const fallbackKey = end ? warEndKeys.get(end.toISOString()) : null;
       war = fallbackKey ? byWar.get(fallbackKey) : null;
     }
-
     if (war) war.attack_count += 1;
   }
 
@@ -187,23 +182,43 @@ export function compactWarAttackContext(wars = [], attacks = []) {
 
 export function compactCwlAttackContext(seasons = [], wars = [], attacks = []) {
   const attacksByWar = new Map();
+  const attackRoundByWar = new Map();
   for (const attack of attacks) {
     const key = String(attack.war_tag ?? '');
     if (!key) continue;
     attacksByWar.set(key, (attacksByWar.get(key) || 0) + 1);
+    if (attack.round_no != null && !attackRoundByWar.has(key)) attackRoundByWar.set(key, Number(attack.round_no));
+  }
+
+  // The CWL group response already contains the ordered daily rounds and their
+  // warTags. Use that as the primary round mapping because cwl_wars itself does
+  // not require a round_no column. Attack rows are a secondary fallback.
+  const roundByWar = new Map();
+  const seasonRoundCounts = new Map();
+  for (const season of seasons) {
+    const rounds = season.data?.rounds ?? [];
+    seasonRoundCounts.set(season.season_key, rounds.length);
+    rounds.forEach((round, index) => {
+      const roundNo = Number(round.roundNo ?? round.round_no ?? index + 1) || index + 1;
+      for (const warTag of round.warTags ?? []) {
+        if (warTag && warTag !== '#0') roundByWar.set(String(warTag), roundNo);
+      }
+    });
   }
 
   const warRows = wars.map(war => {
     const data = war.data ?? {};
     const clan = data.clan ?? {};
     const opponent = data.opponent ?? {};
-    const start = parseCoCTimestamp(data.startTime) || parseCoCTimestamp(war.data?.start_time);
-    const end = parseCoCTimestamp(data.endTime) || parseCoCTimestamp(war.data?.end_time);
-    const attackCount = attacksByWar.get(String(war.war_tag ?? '')) || 0;
+    const start = parseCoCTimestamp(data.startTime) || parseCoCTimestamp(data.start_time);
+    const end = parseCoCTimestamp(data.endTime) || parseCoCTimestamp(data.end_time);
+    const warTag = String(war.war_tag ?? '');
+    const attackCount = attacksByWar.get(warTag) || 0;
+    const roundNo = Number(data.roundNo ?? data.round_no ?? roundByWar.get(warTag) ?? attackRoundByWar.get(warTag) ?? 0) || null;
     return {
       event_type: 'cwl',
       season_key: war.season_key,
-      round_no: Number(war.data?.roundNo ?? war.data?.round_no ?? 0) || null,
+      round_no: roundNo,
       war_tag: war.war_tag,
       label: formatWarPeriod(start, end),
       start_time: start?.toISOString() ?? null,
@@ -225,7 +240,6 @@ export function compactCwlAttackContext(seasons = [], wars = [], attacks = []) {
     };
   });
 
-  const warByTag = new Map(warRows.map(war => [war.war_tag, war]));
   const seasonMap = new Map();
   for (const season of seasons) {
     const seasonKey = season.season_key;
@@ -238,18 +252,19 @@ export function compactCwlAttackContext(seasons = [], wars = [], attacks = []) {
       end_time: parseCoCTimestamp(data.endTime)?.toISOString() ?? null,
       rounds: [],
       round_count: 0,
-      attack_rows_available: 0
+      attack_rows_available: 0,
+      expected_round_count: seasonRoundCounts.get(seasonKey) || 0
     });
   }
 
   // Every CWL war belongs to one season and one numbered round/day. Keep that
-  // hierarchy explicit so the model cannot treat the seven daily wars as one
-  // normal Clan War.
+  // hierarchy explicit so the model cannot treat the daily wars as one normal
+  // Clan War.
   for (const war of warRows) {
     if (!seasonMap.has(war.season_key)) {
       seasonMap.set(war.season_key, {
         event_type: 'cwl', season_key: war.season_key, label: 'Unknown period', start_time: null, end_time: null,
-        rounds: [], round_count: 0, attack_rows_available: 0
+        rounds: [], round_count: 0, attack_rows_available: 0, expected_round_count: 0
       });
     }
     const season = seasonMap.get(war.season_key);
@@ -302,11 +317,12 @@ export function compactCwlAttackContext(seasons = [], wars = [], attacks = []) {
     totals: {
       seasons: nestedSeasons.length,
       rounds: nestedSeasons.reduce((sum, season) => sum + season.round_count, 0),
+      expected_rounds: nestedSeasons.reduce((sum, season) => sum + season.expected_round_count, 0),
       wars: sortedWars.length,
       wars_with_attack_data: sortedWars.filter(w => w.attack_data_available).length,
       wars_without_attack_data: sortedWars.filter(w => !w.attack_data_available).length,
       attack_rows_available: sortedWars.reduce((sum, w) => sum + w.attack_count, 0)
     },
-    note: 'CWL is a separate event type from normal Clan War. A CWL season contains separate daily rounds/wars; each round has its own opponent, result, score, destruction and attack records. Never combine the rounds into one normal Clan War. Only wars with attack_data_available=true contain captured individual attack rows; missing attack rows are reported as unavailable rather than invented.'
+    note: 'CWL is a separate event type from normal Clan War. A CWL season contains separate daily rounds/wars; each round has its own opponent, result, score, destruction and attack records. The CWL group response warTags are used to map each war to its correct round/day, with attack round_no as a fallback. Never combine the rounds into one normal Clan War. Only wars with attack_data_available=true contain captured individual attack rows; missing attack rows are reported as unavailable rather than invented.'
   };
 }
