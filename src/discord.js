@@ -186,6 +186,21 @@ function pageContent(provider, elapsed, chunks, page) {
   return `**${provider} • ${elapsed}s**\n${chunks[page]}`;
 }
 
+function formatISTTimestamp(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return `${values.day}/${values.month}/${values.year} ${values.hour}:${values.minute}:${values.second} IST`;
+}
+
 function classifyProviderError(provider, error) {
   const raw = String(error?.providerBody || error?.message || 'Unknown error');
   const status = error?.status ?? 'unknown';
@@ -198,11 +213,18 @@ function classifyProviderError(provider, error) {
       userMessage: `${provider} could not process that request because too much data was sent to it. Please use /tell (Gemini) for this question.`
     };
   }
-  if (status === 429 || /rate.?limit|quota|too many requests|limit exceeded|tokens?.*limit/i.test(lower)) {
+  if (Number(status) === 402 || /insufficient_quota_error|no credits available|credits? (?:are )?(?:exhausted|unavailable)/i.test(lower)) {
     return {
-      kind: 'quota_rate_limit',
-      title: `${provider} quota/rate limit reached`,
-      userMessage: `${provider} is temporarily unavailable because its API limit was reached. Please use /tell (Gemini) for now.`
+      kind: 'credits_exhausted',
+      title: `${provider} credits exhausted`,
+      userMessage: `${provider} has no API credits available right now. Please use /tell (Gemini) or add credits to the ${provider} account.`
+    };
+  }
+  if (status === 429 || /rate.?limit|too many requests|limit exceeded|tokens?.*limit/i.test(lower)) {
+    return {
+      kind: 'rate_limit',
+      title: `${provider} rate limit reached`,
+      userMessage: `${provider} is temporarily rate-limited. Please use /tell (Gemini) for now.`
     };
   }
   if (/api.?key|unauthorized|authentication|invalid.*key|forbidden/i.test(lower) || status === 401 || status === 403) {
@@ -248,7 +270,7 @@ async function sendPonyoAlert({ interaction, provider, question, error, classifi
       `**Channel:** ${interaction.channel?.name || interaction.channelId || 'unknown'} (${interaction.channelId || 'unknown'})`,
       `**Elapsed before failure:** ${elapsed}s`,
       `**Question:** ${question}`,
-      `**Time:** ${new Date().toISOString()}`,
+      `**Time:** ${formatISTTimestamp()}`,
       '',
       '**Provider error details (private alert channel):**',
       '```text',
