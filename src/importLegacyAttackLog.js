@@ -48,6 +48,12 @@ const isoOrNull = value => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
+const cocTimestampToIso = value => {
+  const m = String(value ?? '').match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(?:\.\d+)?Z?$/);
+  if (!m) return isoOrNull(value);
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toISOString();
+};
+
 const sourceData = row => ({
   source: 'legacy_attack_log_csv',
   legacy_id: numberOrNull(row.id),
@@ -64,7 +70,7 @@ if (unsupportedRows.length) {
   throw new Error(`Unsupported context values found: ${[...new Set(unsupportedRows.map(r => r.context))].join(', ')}`);
 }
 
-let capitalAttackRows = [];
+const capitalAttackRows = [];
 for (const row of capitalRows) {
   const match = String(row.defender_tag).match(/^([^:]+):(\d+)$/);
   if (!match) throw new Error(`Cannot parse Capital defender tag: ${row.defender_tag}`);
@@ -88,7 +94,7 @@ for (const row of capitalRows) {
   });
 }
 
-let warAttackRows = [];
+const warAttackRows = [];
 for (const row of warRows) {
   const warKey = `legacy:${row.clan_tag}:${row.context_ref}`;
   warAttackRows.push({
@@ -122,7 +128,7 @@ for (const seasonKey of capitalSeasonKeys) {
     season_key: seasonKey,
     data: {
       source: 'legacy_attack_log_csv',
-      startTime: seasonRows[0].context_ref,
+      startTime: cocTimestampToIso(seasonRows[0].context_ref),
       importedAttackRows: seasonRows.length,
       opponentClanTags: opponents,
       note: 'Attack details imported from legacy CSV. Summary fields not present in the source were intentionally left unknown.'
@@ -140,7 +146,7 @@ for (const warKey of warKeys) {
     clan_tag: clans[0],
     war_key: warKey,
     state: 'legacy_import',
-    start_time: isoOrNull(eventRows[0].context_ref),
+    start_time: cocTimestampToIso(eventRows[0].context_ref),
     end_time: null,
     data: {
       source: 'legacy_attack_log_csv',
