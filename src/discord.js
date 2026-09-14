@@ -9,7 +9,7 @@ import {
   Routes,
   SlashCommandBuilder
 } from 'discord.js';
-import { answer } from './ai.js';
+import { answer, tell } from './ai.js';
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -25,7 +25,16 @@ const ANSWER_TTL_MS = 15 * 60 * 1000;
 const commands = [
   new SlashCommandBuilder()
     .setName('ask')
-    .setDescription('Ask the Clash of Clans AI analyst')
+    .setDescription('Ask the fast Sarvam Clash of Clans analyst')
+    .addStringOption(option => option
+      .setName('question')
+      .setDescription('Ask a data-backed question about the clan')
+      .setRequired(true)
+      .setMaxLength(1000))
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('tell')
+    .setDescription('Ask the deeper Gemini Clash of Clans analyst')
     .addStringOption(option => option
       .setName('question')
       .setDescription('Ask a data-backed question about the clan')
@@ -54,9 +63,9 @@ function splitDiscordMessage(text, max = 1900) {
   return chunks;
 }
 
-function rememberAnswer(question, result, userId) {
+function rememberAnswer(question, result, userId, provider) {
   const id = `${userId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-  pendingAnswers.set(id, { question, result, userId, expiresAt: Date.now() + ANSWER_TTL_MS });
+  pendingAnswers.set(id, { question, result, userId, provider, expiresAt: Date.now() + ANSWER_TTL_MS });
   setTimeout(() => pendingAnswers.delete(id), ANSWER_TTL_MS).unref?.();
   return id;
 }
@@ -70,23 +79,36 @@ function forwardButton(id) {
 
 client.once('ready', () => console.log(`Discord bot online as ${client.user.tag}`));
 
-client.on('interactionCreate', async interaction => {
-  if (interaction.isChatInputCommand() && interaction.commandName === 'ask') {
-    await interaction.deferReply();
-    try {
-      const question = interaction.options.getString('question', true).trim();
-      const result = await answer(question);
-      const chunks = splitDiscordMessage(result);
-      const id = rememberAnswer(question, result, interaction.user.id);
-      const row = forwardButton(id);
+async function handleAiCommand(interaction, provider, generator) {
+  await interaction.deferReply();
+  try {
+    const question = interaction.options.getString('question', true).trim();
+    const started = Date.now();
+    const result = await generator(question);
+    const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+    const chunks = splitDiscordMessage(result);
+    const id = rememberAnswer(question, result, interaction.user.id, provider);
+    const row = forwardButton(id);
+    const header = `**${provider} • ${elapsed}s**`;
+    await interaction.editReply({ content: `${header}\n${chunks[0]}`, components: row ? [row] : [] });
+    for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
+  } catch (error) {
+    console.error(`[discord] ${provider.toLowerCase()} failed`, error);
+    const message = error?.message?.slice(0, 300) || 'Unknown error';
+    await interaction.editReply(`I could not get a ${provider} response right now.\n\`${message}\``);
+  }
+}
 
-      await interaction.editReply({ content: chunks[0], components: row ? [row] : [] });
-      for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
-    } catch (error) {
-      console.error('[discord] ask failed', error);
-      await interaction.editReply('I could not answer that right now. Check the bot logs for details.');
+client.on('interactionCreate', async interaction => {
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === 'ask') {
+      await handleAiCommand(interaction, 'Sarvam', answer);
+      return;
     }
-    return;
+    if (interaction.commandName === 'tell') {
+      await handleAiCommand(interaction, 'Gemini', tell);
+      return;
+    }
   }
 
   if (!interaction.isButton() || !interaction.customId.startsWith('ai-forward:')) return;
@@ -105,7 +127,7 @@ client.on('interactionCreate', async interaction => {
   try {
     const channel = await client.channels.fetch(forwardChannelId);
     if (!channel?.isTextBased()) throw new Error('AI_FORWARD_CHANNEL_ID is not a text channel');
-    const chunks = splitDiscordMessage(`**AI Analysis**\n**Question:** ${saved.question}\n\n${saved.result}`);
+    const chunks = splitDiscordMessage(`**${saved.provider || 'AI'} Analysis**\n**Question:** ${saved.question}\n\n${saved.result}`);
     await channel.send(chunks[0]);
     for (const chunk of chunks.slice(1)) await channel.send(chunk);
     await interaction.editReply('Forwarded to the configured AI channel.');
