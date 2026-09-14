@@ -1,4 +1,4 @@
-import { getPlayers, getCurrentWar, getWarMembers, getWarAttacks, getSnapshots } from './retrieval.js';
+import { getPlayers, getCurrentWar, getWarMembers, getWarAttacks, getSnapshots, getCapitalSeasons } from './retrieval.js';
 
 export async function currentWarAnalysis() {
   const war = await getCurrentWar();
@@ -48,4 +48,65 @@ export function summarizeWarMembers(members = []) {
     stars: Number(m.stars_earned ?? 0),
     destruction: Number(m.destruction_percentage ?? 0)
   }));
+}
+
+function addPlayer(map, player, seasonKey) {
+  if (!player?.tag && !player?.name) return;
+  const key = player.tag || player.name;
+  const row = map.get(key) ?? {
+    tag: player.tag ?? null,
+    name: player.name ?? 'Unknown',
+    seasons: 0,
+    attacks: 0,
+    capital_gold: 0,
+    stars: 0,
+    destruction: 0,
+    attack_records: 0,
+    season_keys: []
+  };
+  if (seasonKey && !row.season_keys.includes(seasonKey)) {
+    row.seasons += 1;
+    row.season_keys.push(seasonKey);
+  }
+  row.attacks += Number(player.attacks ?? player.attackCount ?? 0);
+  row.capital_gold += Number(player.capitalResourcesLooted ?? player.capital_gold ?? 0);
+  map.set(key, row);
+  return row;
+}
+
+function addAttackStats(map, attack) {
+  const attacker = attack?.attacker;
+  if (!attacker?.tag && !attacker?.name) return;
+  const row = addPlayer(map, attacker, null);
+  row.stars += Number(attack.stars ?? 0);
+  row.destruction += Number(attack.destructionPercent ?? 0);
+  row.attack_records += 1;
+}
+
+export async function capitalPlayerLeaderboard(seasons = 12) {
+  const rows = await getCapitalSeasons(seasons);
+  const players = new Map();
+
+  for (const seasonRow of rows) {
+    const data = seasonRow?.data ?? {};
+    const seasonKey = seasonRow?.season_key ?? data.startTime ?? data.endTime ?? null;
+
+    // The official API exposes member totals directly on each raid season.
+    for (const member of data.members ?? []) addPlayer(players, member, seasonKey);
+
+    // Also calculate attack-level stars/destruction when attack details are available.
+    for (const entry of data.attackLog ?? []) {
+      for (const district of entry.districts ?? []) {
+        for (const attack of district.attacks ?? []) addAttackStats(players, attack);
+      }
+    }
+  }
+
+  return [...players.values()]
+    .map(row => ({
+      ...row,
+      avg_destruction: row.attack_records ? row.destruction / row.attack_records : 0
+    }))
+    .sort((a, b) => b.capital_gold - a.capital_gold || b.stars - a.stars || b.attacks - a.attacks)
+    .slice(0, 100);
 }
