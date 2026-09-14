@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { getPlayers, getCurrentWar, searchWars, getSnapshots, getCapitalSeasons, getCwlSeasons, getCwlWars, getWarAttacks, getWarMembers, getAttackLog } from './retrieval.js';
+import { getPlayers, getCurrentWar, searchWars, getSnapshots, getCapitalSeasons, getCwlSeasons, getCwlWars, getWarAttacks, getWarMembers, getCwlAttacks, getCapitalAttacks } from './retrieval.js';
 import { capitalPlayerLeaderboard } from './analytics.js';
 
 const MONTHS = /january|february|march|april|may|june|july|august|september|october|november|december|month|year|trend|history|improv|declin/i;
@@ -23,23 +23,20 @@ async function buildContext(question) {
     if(current?.war_key){
       context.current_war_members=enrichWarMembers(await getWarMembers(current.war_key));
       context.current_war_attacks=await getWarAttacks(current.war_key);
-      context.current_attack_log=await getAttackLog({tournamentType:'war',tournamentId:current.war_key,limit:200});
     }
     let wars=opponent?await searchWars(opponent,25):await searchWars('',25);
     if(opponent&&wars.length===0) wars=await searchWars('',25);
     context.wars=wars;
     if(opponent&&wars.length){
       context.war_details=[];
-      for(const war of wars.slice(0,5)) context.war_details.push({war,members:enrichWarMembers(await getWarMembers(war.war_key)),attacks:await getWarAttacks(war.war_key),attack_log:await getAttackLog({tournamentType:'war',tournamentId:war.war_key,limit:200})});
-    } else if(!current?.war_key) {
-      context.attack_log=await getAttackLog({tournamentType:'war',limit:200});
+      for(const war of wars.slice(0,5)) context.war_details.push({war,members:enrichWarMembers(await getWarMembers(war.war_key)),attacks:await getWarAttacks(war.war_key)});
     }
   }
 
   if(kind.capital){
     const seasons=await getCapitalSeasons(12);
     context.capital_raids=seasons.map(row=>{const d=row.data??{}; return {season_key:row.season_key,start_time:d.startTime??null,end_time:d.endTime??null,state:d.state??null,capital_total_loot:d.capitalTotalLoot??0,raids_completed:d.raidsCompleted??0,total_attacks:d.totalAttacks??0,enemy_districts_destroyed:d.enemyDistrictsDestroyed??0,offensive_reward:d.offensiveReward??0,defensive_reward:d.defensiveReward??0};});
-    context.capital_attack_log=await getAttackLog({tournamentType:'capital',limit:300});
+    context.capital_attacks=await getCapitalAttacks({limit:500});
     const leaderboard=await capitalPlayerLeaderboard(12);
     context.capital_player_rankings={by_capital_gold:[...leaderboard].sort((a,b)=>b.capital_gold-a.capital_gold).slice(0,20),by_stars:[...leaderboard].sort((a,b)=>b.stars-a.stars||b.capital_gold-a.capital_gold).slice(0,20),note:'capital_gold is capital resources looted by the member across synced raid seasons; stars is the sum of individual attack stars when attack details are available.'};
   }
@@ -47,16 +44,29 @@ async function buildContext(question) {
   if(kind.cwl){
     context.cwl=await getCwlSeasons(12);
     context.cwl_wars=await getCwlWars(null,50);
-    context.cwl_attack_log=await getAttackLog({tournamentType:'cwl',limit:300});
+    context.cwl_attacks=await getCwlAttacks({limit:500});
   }
 
   if(kind.history){
     const player=extractPlayerName(question,players);
     if(player) context.player_snapshots=await getSnapshots(player.tag,null,500);
-    context.historical_attack_log=await getAttackLog({attackerTag:player?.tag,limit:300});
+    context.historical_war_attacks=await getWarAttacksForHistory(player?.tag);
+    context.historical_cwl_attacks=await getCwlAttacks({attackerTag:player?.tag,limit:300});
+    context.historical_capital_attacks=await getCapitalAttacks({attackerTag:player?.tag,limit:300});
   }
   if(Object.keys(context).length===1){context.players=players.length?players:await getPlayers({limit:100}); context.current_war=await getCurrentWar();}
   return context;
+}
+
+async function getWarAttacksForHistory(playerTag) {
+  if (!playerTag) return [];
+  const wars = await searchWars('', 100);
+  const rows = [];
+  for (const war of wars) {
+    const attacks = await getWarAttacks(war.war_key, 500);
+    rows.push(...attacks.filter(a => a.attacker_tag === playerTag));
+  }
+  return rows;
 }
 
 async function generateGemini(model,key,body){
@@ -74,7 +84,7 @@ async function askGemini(question,context){
   const supported=['gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'];
   const models=[supported.includes(configured)?configured:'gemini-3.8-flash',...supported].filter((m,i,a)=>a.indexOf(m)===i);
   if(configured!==models[0]) console.warn(`[ai] ignoring unsupported/slow Gemini model ${configured}; using ${models[0]}`);
-  const system=`You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. Calculate rankings from supplied values. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. The attack_log contains every attack observed by our sync. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack and is the reliable fallback timestamp. Prefer targeted context and keep answers concise, useful, and data-backed.`;
+  const system=`You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. Calculate rankings from supplied values. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep answers concise, useful, and data-backed.`;
   const body={system_instruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}]}],generationConfig:{thinkingConfig:{thinkingLevel:'low'},maxOutputTokens:1200}};
   let last;
   for(const model of models){try{console.log(`[ai] trying Gemini model ${model} (low thinking)`);return await generateGemini(model,key,body);}catch(error){last=error;if([404,408,429,500,502,503,504].includes(error.status)){console.warn(`[ai] ${model} unavailable (${error.status}); immediately trying next Gemini model`);continue;}throw error;}}
@@ -86,7 +96,7 @@ async function askSarvam(question,context){
   if(!key) throw new Error('SARVAM_API_KEY is required for /ask');
   const configured=process.env.SARVAM_MODEL||'sarvam-105b';
   const model=configured==='sarvam-105b-conversations'?'sarvam-105b':configured;
-  const system=`You are a fast Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent stats, attacks, wars, dates, opponents, or outcomes. Distinguish current from historical data. Calculate rankings from supplied values. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. The attack_log contains every attack observed by our sync. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack and is the reliable fallback timestamp. Prefer targeted context and keep the response concise, clear, and data-backed.`;
+  const system=`You are a fast Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent stats, attacks, wars, dates, opponents, or outcomes. Distinguish current from historical data. Calculate rankings from supplied values. Clan War attacks, CWL attacks, and Clan Capital attacks are stored in separate tables and must never be mixed. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. attack_time is the actual source timestamp only when the API provides one; observed_at is when our sync first saw the attack. Prefer targeted context and keep the response concise, clear, and data-backed.`;
   const body={model,messages:[{role:'system',content:system},{role:'user',content:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}],temperature:0.15,reasoning_effort:null,max_tokens:800};
   const res=await fetch('https://api.sarvam.ai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','api-subscription-key':key},body:JSON.stringify(body)});
   if(!res.ok){const message=await res.text();const error=new Error(`Sarvam ${res.status}: ${message}`);error.status=res.status;throw error;}
