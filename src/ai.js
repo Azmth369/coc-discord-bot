@@ -17,6 +17,13 @@ function extractOpponent(question) {
   return m?.[1]?.trim() || null;
 }
 
+function extractPlayerName(question, players) {
+  const normalized = question.toLowerCase();
+  return [...players]
+    .sort((a, b) => b.name.length - a.name.length)
+    .find(p => normalized.includes(p.name.toLowerCase())) ?? null;
+}
+
 function enrichWarMembers(members) {
   return members.map(m => ({
     ...m,
@@ -27,8 +34,8 @@ function enrichWarMembers(members) {
 async function buildContext(question) {
   const kind = classify(question);
   const context = { retrieval: kind };
-
-  if (kind.member) context.players = await getPlayers({ limit: 100 });
+  const players = kind.member || kind.history ? await getPlayers({ limit: 100 }) : [];
+  if (players.length) context.players = players;
 
   if (kind.war) {
     const current = await getCurrentWar();
@@ -37,12 +44,22 @@ async function buildContext(question) {
       context.current_war_members = enrichWarMembers(await getWarMembers(current.war_key));
       context.current_war_attacks = await getWarAttacks(current.war_key);
     }
+
+    // Targeted first: when an opponent is named, only bring matching wars into the AI context.
+    // Safe fallback: if that produces nothing, widen to the most recent wars.
     const opponent = extractOpponent(question);
-    context.wars = await searchWars(opponent, 25);
-    if (opponent && context.wars.length) {
+    let wars = opponent ? await searchWars(opponent, 25) : await searchWars('', 25);
+    if (opponent && wars.length === 0) wars = await searchWars('', 25);
+    context.wars = wars;
+
+    if (opponent && wars.length) {
       context.war_details = [];
-      for (const war of context.wars.slice(0, 5)) {
-        context.war_details.push({ war, members: enrichWarMembers(await getWarMembers(war.war_key)), attacks: await getWarAttacks(war.war_key) });
+      for (const war of wars.slice(0, 5)) {
+        context.war_details.push({
+          war,
+          members: enrichWarMembers(await getWarMembers(war.war_key)),
+          attacks: await getWarAttacks(war.war_key)
+        });
       }
     }
   }
@@ -55,16 +72,13 @@ async function buildContext(question) {
   }
 
   if (kind.history) {
-    const playerName = question.match(/(?:player|member)\s+([A-Za-z0-9_.@-]+)/i)?.[1];
-    if (playerName) {
-      const players = context.players ?? await getPlayers({ limit: 100 });
-      const p = players.find(x => x.name.toLowerCase() === playerName.toLowerCase());
-      if (p) context.player_snapshots = await getSnapshots(p.tag, null, 500);
-    }
+    const player = extractPlayerName(question, players);
+    if (player) context.player_snapshots = await getSnapshots(player.tag, null, 500);
   }
 
+  // Broad fallback only when keyword classification found no useful domain.
   if (Object.keys(context).length === 1) {
-    context.players = await getPlayers({ limit: 100 });
+    context.players = players.length ? players : await getPlayers({ limit: 100 });
     context.current_war = await getCurrentWar();
   }
   return context;
@@ -75,7 +89,7 @@ async function askGemini(question, context) {
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   if (!key) throw new Error('GEMINI_API_KEY is required');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-  const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Keep answers concise, useful, and data-backed.`;
+  const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Prefer targeted context over unrelated records. Keep answers concise, useful, and data-backed.`;
   const body = {
     system_instruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: [{ text: `${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }] }],
