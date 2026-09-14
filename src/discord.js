@@ -21,10 +21,9 @@ if (!token || !clientId) throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID ar
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const pendingAnswers = new Map();
 const ANSWER_TTL_MS = 15 * 60 * 1000;
-// Keep normal answers as a single clean Discord message. Only paginate once the
-// answer is too long to fit comfortably in one message.
 const PAGINATION_THRESHOLD = 1800;
 const PAGE_SIZE = PAGINATION_THRESHOLD;
+const MAX_LIST_ITEMS_PER_PAGE = 10;
 
 const commands = [
   new SlashCommandBuilder()
@@ -53,18 +52,57 @@ async function registerCommands() {
   await rest.put(route, { body: commands });
 }
 
+function isListItem(line) {
+  return /^\s*(?:[-*•]|\d+[.)])\s+/.test(line);
+}
+
+function numberListBlocks(text) {
+  const lines = String(text ?? '').split('\n');
+  let inList = false;
+  let number = 0;
+  return lines.map(line => {
+    if (!isListItem(line)) {
+      inList = false;
+      number = 0;
+      return line;
+    }
+    const body = line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').trim();
+    if (!inList) {
+      inList = true;
+      number = 1;
+    } else {
+      number += 1;
+    }
+    return `${number}. ${body}`;
+  }).join('\n');
+}
+
 function splitDiscordMessage(text, max = PAGE_SIZE) {
-  const chunks = [];
-  let remaining = String(text ?? 'No answer generated.').trim();
-  while (remaining.length > max) {
-    let cut = remaining.lastIndexOf('\n', max);
-    if (cut < Math.floor(max * 0.55)) cut = remaining.lastIndexOf(' ', max);
-    if (cut < 1) cut = max;
-    chunks.push(remaining.slice(0, cut).trimEnd());
-    remaining = remaining.slice(cut).trimStart();
+  const normalized = numberListBlocks(String(text ?? 'No answer generated.').trim());
+  const lines = normalized.split('\n');
+  const pages = [];
+  let current = [];
+  let listItems = 0;
+
+  const flush = () => {
+    const value = current.join('\n').trim();
+    if (value) pages.push(value);
+    current = [];
+    listItems = 0;
+  };
+
+  for (const line of lines) {
+    const listItem = isListItem(line);
+    if (listItem && listItems >= MAX_LIST_ITEMS_PER_PAGE) flush();
+    if (current.length && current.join('\n').length + line.length + 1 > max) flush();
+
+    current.push(line);
+    if (listItem) listItems += 1;
+    else if (line.trim()) listItems = 0;
   }
-  if (remaining) chunks.push(remaining);
-  return chunks.length ? chunks : ['No answer generated.'];
+
+  flush();
+  return pages.length ? pages : ['No answer generated.'];
 }
 
 function rememberAnswer(question, result, userId, provider, elapsed) {
