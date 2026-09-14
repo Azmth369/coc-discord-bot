@@ -20,7 +20,10 @@ if (!token || !clientId) throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID ar
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const pendingAnswers = new Map();
-const ANSWER_TTL_MS = 15 * 60 * 1000;
+const conversationMemory = new Map();
+const ANSWER_TTL_MS = 24 * 60 * 60 * 1000;
+const MEMORY_TTL_MS = 60 * 60 * 1000;
+const MAX_MEMORY_TURNS = 5;
 const PAGINATION_THRESHOLD = 1800;
 const PAGE_SIZE = PAGINATION_THRESHOLD;
 const MAX_LIST_ITEMS_PER_PAGE = 10;
@@ -105,6 +108,36 @@ function splitDiscordMessage(text, max = PAGE_SIZE) {
   return pages.length ? pages : ['No answer generated.'];
 }
 
+function memoryKey(interaction) {
+  return `${interaction.guildId || 'dm'}:${interaction.channelId || 'unknown'}:${interaction.user.id}`;
+}
+
+function getConversationContext(key) {
+  const entry = conversationMemory.get(key);
+  if (!entry || entry.expiresAt < Date.now()) {
+    conversationMemory.delete(key);
+    return [];
+  }
+  return entry.turns;
+}
+
+function buildContextualQuestion(question, turns) {
+  if (!turns.length) return question;
+  const history = turns.map((turn, index) =>
+    `TURN ${index + 1}\nUSER: ${turn.question}\nASSISTANT: ${turn.answer}`
+  ).join('\n\n');
+  return `RECENT CONVERSATION CONTEXT (use this only to resolve follow-ups such as they/them/their/those/that player/that war; answer the CURRENT QUESTION, not the old questions):\n${history}\n\nCURRENT QUESTION: ${question}`;
+}
+
+function rememberConversation(key, question, answerText) {
+  const existing = getConversationContext(key);
+  const turns = [...existing, {
+    question,
+    answer: String(answerText || '').slice(0, 4000)
+  }].slice(-MAX_MEMORY_TURNS);
+  conversationMemory.set(key, { turns, expiresAt: Date.now() + MEMORY_TTL_MS });
+}
+
 function rememberAnswer(question, result, userId, provider, elapsed) {
   const id = `${userId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   pendingAnswers.set(id, { question, result, userId, provider, elapsed, page: 0, expiresAt: Date.now() + ANSWER_TTL_MS });
@@ -136,9 +169,13 @@ async function handleAiCommand(interaction, provider, generator) {
   await interaction.deferReply();
   try {
     const question = interaction.options.getString('question', true).trim();
+    const key = memoryKey(interaction);
+    const turns = getConversationContext(key);
+    const contextualQuestion = buildContextualQuestion(question, turns);
     const started = Date.now();
-    const result = await generator(question);
+    const result = await generator(contextualQuestion);
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+    rememberConversation(key, question, result);
     const chunks = splitDiscordMessage(result);
     const id = rememberAnswer(question, result, interaction.user.id, provider, elapsed);
     const components = chunks.length > 1 ? [viewerRow(id, 0, chunks.length)] : [];
@@ -177,6 +214,7 @@ client.on('interactionCreate', async interaction => {
     const current = Number(saved.page || 0);
     const page = Math.max(0, Math.min(chunks.length - 1, current + (direction === 'next' ? 1 : -1)));
     saved.page = page;
+    saved.expiresAt = Date.now() + ANSWER_TTL_MS;
     await interaction.update({ content: pageContent(saved.provider, saved.elapsed || '—', chunks, page), components: [viewerRow(id, page, chunks.length)] });
     return;
   }
@@ -206,6 +244,11 @@ client.on('interactionCreate', async interaction => {
     await interaction.editReply('I could not forward the answer. Check the bot permissions and AI_FORWARD_CHANNEL_ID.');
   }
 });
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of conversationMemory) if (value.expiresAt < now) conversationMemory.delete(key);
+}, 10 * 60 * 1000).unref?.();
 
 await registerCommands();
 await client.login(token);
