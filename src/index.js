@@ -1,12 +1,14 @@
 import 'dotenv/config';
 import { syncClan, syncWar, syncHistory, syncCapital, syncCwl, run } from './sync.js';
 
+// Fast polling is intentional for live war/CWL/Capital data so attack logs and
+// raid activity are captured before the source API's historical availability changes.
 const schedules = [
   ['clan', Number(process.env.CLAN_POLL_MS || 600000), () => syncClan(false)],
-  ['war', Number(process.env.WAR_POLL_MS || 120000), syncWar],
+  ['war', Number(process.env.WAR_POLL_MS || 60000), syncWar],
   ['history', Number(process.env.HISTORY_POLL_MS || 1800000), syncHistory],
-  ['capital', Number(process.env.CAPITAL_POLL_MS || 1800000), syncCapital],
-  ['cwl', Number(process.env.CWL_POLL_MS || 300000), syncCwl],
+  ['capital', Number(process.env.CAPITAL_POLL_MS || 60000), syncCapital],
+  ['cwl', Number(process.env.CWL_POLL_MS || 60000), syncCwl],
   ['player-snapshot', Number(process.env.PLAYER_POLL_MS || 1800000), () => syncClan(true)]
 ];
 
