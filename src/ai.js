@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { getPlayers, getCurrentWar, searchWars, getSnapshots, getCapitalSeasons, getCwlSeasons, getCwlWars, getWarAttacks, getWarMembers } from './retrieval.js';
+import { capitalPlayerLeaderboard } from './analytics.js';
 
 const MONTHS = /january|february|march|april|may|june|july|august|september|october|november|december|month|year|trend|history|improv|declin/i;
 const WAR = /war|attack|defen|star|opponent|miss|hit|battle/i;
@@ -64,7 +65,31 @@ async function buildContext(question) {
     }
   }
 
-  if (kind.capital) context.capital_raids = await getCapitalSeasons(12);
+  if (kind.capital) {
+    const capitalSeasons = await getCapitalSeasons(12);
+    context.capital_raids = capitalSeasons.map(row => {
+      const data = row.data ?? {};
+      return {
+        season_key: row.season_key,
+        start_time: data.startTime ?? null,
+        end_time: data.endTime ?? null,
+        state: data.state ?? null,
+        capital_total_loot: data.capitalTotalLoot ?? 0,
+        raids_completed: data.raidsCompleted ?? 0,
+        total_attacks: data.totalAttacks ?? 0,
+        enemy_districts_destroyed: data.enemyDistrictsDestroyed ?? 0,
+        offensive_reward: data.offensiveReward ?? 0,
+        defensive_reward: data.defensiveReward ?? 0
+      };
+    });
+
+    const leaderboard = await capitalPlayerLeaderboard(12);
+    context.capital_player_rankings = {
+      by_capital_gold: [...leaderboard].sort((a, b) => b.capital_gold - a.capital_gold).slice(0, 20),
+      by_stars: [...leaderboard].sort((a, b) => b.stars - a.stars || b.capital_gold - a.capital_gold).slice(0, 20),
+      note: 'capital_gold is capital resources looted by the member across synced raid seasons; stars is the sum of individual attack stars when attack details are available.'
+    };
+  }
 
   if (kind.cwl) {
     context.cwl = await getCwlSeasons(12);
@@ -89,7 +114,7 @@ async function askGemini(question, context) {
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   if (!key) throw new Error('GEMINI_API_KEY is required');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-  const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Prefer targeted context over unrelated records. Keep answers concise, useful, and data-backed.`;
+  const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For Clan Capital questions, treat capital_gold as the member's capital resources looted and stars as attack stars; if the user says "scored" without defining a metric, state which metric you are using. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Prefer targeted context over unrelated records. Keep answers concise, useful, and data-backed.`;
   const body = {
     system_instruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: [{ text: `${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }] }],
