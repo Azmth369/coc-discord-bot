@@ -46,8 +46,6 @@ async function buildContext(question) {
       context.current_war_attacks = await getWarAttacks(current.war_key);
     }
 
-    // Targeted first: when an opponent is named, only bring matching wars into the AI context.
-    // Safe fallback: if that produces nothing, widen to the most recent wars.
     const opponent = extractOpponent(question);
     let wars = opponent ? await searchWars(opponent, 25) : await searchWars('', 25);
     if (opponent && wars.length === 0) wars = await searchWars('', 25);
@@ -101,7 +99,6 @@ async function buildContext(question) {
     if (player) context.player_snapshots = await getSnapshots(player.tag, null, 500);
   }
 
-  // Broad fallback only when keyword classification found no useful domain.
   if (Object.keys(context).length === 1) {
     context.players = players.length ? players : await getPlayers({ limit: 100 });
     context.current_war = await getCurrentWar();
@@ -109,21 +106,49 @@ async function buildContext(question) {
   return context;
 }
 
+async function generateWithModel(model, key, question, bodyWithoutContext) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyWithoutContext)
+  });
+
+  if (!res.ok) {
+    const message = await res.text();
+    const error = new Error(`Gemini ${res.status}: ${message}`);
+    error.status = res.status;
+    throw error;
+  }
+
+  const json = await res.json();
+  return json.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || 'No answer generated.';
+}
+
 async function askGemini(question, context) {
   const key = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const configuredModel = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
   if (!key) throw new Error('GEMINI_API_KEY is required');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+
   const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For Clan Capital questions, treat capital_gold as the member's capital resources looted and stars as attack stars; if the user says "scored" without defining a metric, state which metric you are using. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Prefer targeted context over unrelated records. Keep answers concise, useful, and data-backed.`;
   const body = {
     system_instruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: [{ text: `${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }] }],
     generationConfig: { temperature: 0.15 }
   };
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
-  const json = await res.json();
-  return json.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || 'No answer generated.';
+
+  try {
+    return await generateWithModel(configuredModel, key, question, body);
+  } catch (error) {
+    // Google can restrict/deprecate access to a model for a project even when the
+    // model name is still documented. Automatically retry once on a model-not-found
+    // response so the Discord bot does not break when the configured legacy model is unavailable.
+    if (error.status === 404 && configuredModel !== 'gemini-3.6-flash') {
+      console.warn(`[ai] ${configuredModel} unavailable; retrying with gemini-3.6-flash`);
+      return generateWithModel('gemini-3.6-flash', key, question, body);
+    }
+    throw error;
+  }
 }
 
 export async function answer(question) {
