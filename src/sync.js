@@ -102,8 +102,15 @@ export async function syncHistory() {
 }
 
 export async function syncCwl() {
-  const group = await getCwlGroup();
-  if (!group || group.state === 'notInWar') return { state: group?.state ?? 'notInWar' };
+  let group;
+  try {
+    group = await getCwlGroup();
+  } catch (error) {
+    // The CoC API returns 404/notFound when the clan is not currently in a CWL league group.
+    if (error.status === 404 && /notFound/i.test(error.message)) return { state: 'notInCwl' };
+    throw error;
+  }
+  if (!group || group.state === 'notInWar') return { state: group?.state ?? 'notInCwl' };
   const seasonKey = `${clanTag}:${group.season ?? new Date().toISOString().slice(0, 7)}`;
   await upsert('cwl_seasons', [{ clan_tag: clanTag, season_key: seasonKey, data: group, synced_at: now() }]);
   let synced = 0;
