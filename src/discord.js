@@ -1,36 +1,42 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder
+} from 'discord.js';
 import { answer } from './ai.js';
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
 const guildId = process.env.DISCORD_GUILD_ID;
+const forwardChannelId = process.env.AI_FORWARD_CHANNEL_ID;
 
-if (!token || !clientId) {
-  throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID are required');
-}
+if (!token || !clientId) throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID are required');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const pendingAnswers = new Map();
+const ANSWER_TTL_MS = 15 * 60 * 1000;
 
 const commands = [
   new SlashCommandBuilder()
     .setName('ask')
     .setDescription('Ask the Clash of Clans AI analyst')
-    .addStringOption((option) =>
-      option
-        .setName('question')
-        .setDescription('Ask a data-backed question about the clan')
-        .setRequired(true)
-        .setMaxLength(1000)
-    )
+    .addStringOption(option => option
+      .setName('question')
+      .setDescription('Ask a data-backed question about the clan')
+      .setRequired(true)
+      .setMaxLength(1000))
     .toJSON()
 ];
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
-  const route = guildId
-    ? Routes.applicationGuildCommands(clientId, guildId)
-    : Routes.applicationCommands(clientId);
+  const route = guildId ? Routes.applicationGuildCommands(clientId, guildId) : Routes.applicationCommands(clientId);
   await rest.put(route, { body: commands });
 }
 
@@ -48,26 +54,64 @@ function splitDiscordMessage(text, max = 1900) {
   return chunks;
 }
 
-client.once('ready', () => {
-  console.log(`Discord bot online as ${client.user.tag}`);
-});
+function rememberAnswer(question, result, userId) {
+  const id = `${userId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  pendingAnswers.set(id, { question, result, userId, expiresAt: Date.now() + ANSWER_TTL_MS });
+  setTimeout(() => pendingAnswers.delete(id), ANSWER_TTL_MS).unref?.();
+  return id;
+}
 
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.commandName !== 'ask') return;
+function forwardButton(id) {
+  if (!forwardChannelId) return null;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`ai-forward:${id}`).setLabel('Forward to AI channel').setStyle(ButtonStyle.Secondary)
+  );
+}
 
-  await interaction.deferReply();
-  try {
-    const question = interaction.options.getString('question', true).trim();
-    const result = await answer(question);
-    const chunks = splitDiscordMessage(result);
+client.once('ready', () => console.log(`Discord bot online as ${client.user.tag}`));
 
-    await interaction.editReply(chunks[0]);
-    for (const chunk of chunks.slice(1)) {
-      await interaction.followUp(chunk);
+client.on('interactionCreate', async interaction => {
+  if (interaction.isChatInputCommand() && interaction.commandName === 'ask') {
+    await interaction.deferReply();
+    try {
+      const question = interaction.options.getString('question', true).trim();
+      const result = await answer(question);
+      const chunks = splitDiscordMessage(result);
+      const id = rememberAnswer(question, result, interaction.user.id);
+      const row = forwardButton(id);
+
+      await interaction.editReply({ content: chunks[0], components: row ? [row] : [] });
+      for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
+    } catch (error) {
+      console.error('[discord] ask failed', error);
+      await interaction.editReply('I could not answer that right now. Check the bot logs for details.');
     }
+    return;
+  }
+
+  if (!interaction.isButton() || !interaction.customId.startsWith('ai-forward:')) return;
+  const id = interaction.customId.slice('ai-forward:'.length);
+  const saved = pendingAnswers.get(id);
+  if (!saved || saved.expiresAt < Date.now()) {
+    await interaction.reply({ content: 'That AI answer has expired. Ask the question again.', ephemeral: true });
+    return;
+  }
+  if (saved.userId !== interaction.user.id) {
+    await interaction.reply({ content: 'Only the person who asked this question can forward the answer.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const channel = await client.channels.fetch(forwardChannelId);
+    if (!channel?.isTextBased()) throw new Error('AI_FORWARD_CHANNEL_ID is not a text channel');
+    const chunks = splitDiscordMessage(`**AI Analysis**\n**Question:** ${saved.question}\n\n${saved.result}`);
+    await channel.send(chunks[0]);
+    for (const chunk of chunks.slice(1)) await channel.send(chunk);
+    await interaction.editReply('Forwarded to the configured AI channel.');
   } catch (error) {
-    console.error('[discord] ask failed', error);
-    await interaction.editReply('I could not answer that right now. Check the bot logs for details.');
+    console.error('[discord] forward failed', error);
+    await interaction.editReply('I could not forward the answer. Check the bot permissions and AI_FORWARD_CHANNEL_ID.');
   }
 });
 
