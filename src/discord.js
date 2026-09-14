@@ -21,6 +21,7 @@ if (!token || !clientId) throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID ar
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const pendingAnswers = new Map();
 const ANSWER_TTL_MS = 15 * 60 * 1000;
+const PAGE_SIZE = 1800;
 
 const commands = [
   new SlashCommandBuilder()
@@ -49,18 +50,18 @@ async function registerCommands() {
   await rest.put(route, { body: commands });
 }
 
-function splitDiscordMessage(text, max = 1900) {
+function splitDiscordMessage(text, max = PAGE_SIZE) {
   const chunks = [];
-  let remaining = String(text ?? 'No answer generated.');
+  let remaining = String(text ?? 'No answer generated.').trim();
   while (remaining.length > max) {
     let cut = remaining.lastIndexOf('\n', max);
-    if (cut < Math.floor(max * 0.6)) cut = remaining.lastIndexOf(' ', max);
+    if (cut < Math.floor(max * 0.55)) cut = remaining.lastIndexOf(' ', max);
     if (cut < 1) cut = max;
-    chunks.push(remaining.slice(0, cut));
+    chunks.push(remaining.slice(0, cut).trimEnd());
     remaining = remaining.slice(cut).trimStart();
   }
   if (remaining) chunks.push(remaining);
-  return chunks;
+  return chunks.length ? chunks : ['No answer generated.'];
 }
 
 function rememberAnswer(question, result, userId, provider) {
@@ -70,11 +71,22 @@ function rememberAnswer(question, result, userId, provider) {
   return id;
 }
 
-function forwardButton(id) {
-  if (!forwardChannelId) return null;
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`ai-forward:${id}`).setLabel('Forward to AI channel').setStyle(ButtonStyle.Secondary)
+function viewerRow(id, page, total) {
+  const row = new ActionRowBuilder();
+  row.addComponents(
+    new ButtonBuilder().setCustomId(`ai-page:${id}:prev`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
+    new ButtonBuilder().setCustomId(`ai-page:${id}:next`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(page >= total - 1)
   );
+  if (forwardChannelId) {
+    row.addComponents(new ButtonBuilder().setCustomId(`ai-forward:${id}`).setLabel('Forward to AI channel').setStyle(ButtonStyle.Secondary));
+  }
+  return row;
+}
+
+function pageContent(provider, elapsed, chunks, page) {
+  const total = chunks.length;
+  const pageLabel = total > 1 ? ` • Page ${page + 1}/${total}` : '';
+  return `**${provider} • ${elapsed}s${pageLabel}**\n${chunks[page]}`;
 }
 
 client.once('ready', () => console.log(`Discord bot online as ${client.user.tag}`));
@@ -88,10 +100,7 @@ async function handleAiCommand(interaction, provider, generator) {
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     const chunks = splitDiscordMessage(result);
     const id = rememberAnswer(question, result, interaction.user.id, provider);
-    const row = forwardButton(id);
-    const header = `**${provider} • ${elapsed}s**`;
-    await interaction.editReply({ content: `${header}\n${chunks[0]}`, components: row ? [row] : [] });
-    for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
+    await interaction.editReply({ content: pageContent(provider, elapsed, chunks, 0), components: [viewerRow(id, 0, chunks.length)] });
   } catch (error) {
     console.error(`[discord] ${provider.toLowerCase()} failed`, error);
     const message = error?.message?.slice(0, 300) || 'Unknown error';
@@ -109,6 +118,25 @@ client.on('interactionCreate', async interaction => {
       await handleAiCommand(interaction, 'Gemini', tell);
       return;
     }
+  }
+
+  if (interaction.isButton() && interaction.customId.startsWith('ai-page:')) {
+    const [, id, direction] = interaction.customId.split(':');
+    const saved = pendingAnswers.get(id);
+    if (!saved || saved.expiresAt < Date.now()) {
+      await interaction.reply({ content: 'That AI answer has expired. Ask the question again.', ephemeral: true });
+      return;
+    }
+    if (saved.userId !== interaction.user.id) {
+      await interaction.reply({ content: 'Only the person who asked this question can turn its pages.', ephemeral: true });
+      return;
+    }
+    const chunks = splitDiscordMessage(saved.result);
+    const current = Number(saved.page || 0);
+    const page = Math.max(0, Math.min(chunks.length - 1, current + (direction === 'next' ? 1 : -1)));
+    saved.page = page;
+    await interaction.update({ content: pageContent(saved.provider, saved.elapsed || '—', chunks, page), components: [viewerRow(id, page, chunks.length)] });
+    return;
   }
 
   if (!interaction.isButton() || !interaction.customId.startsWith('ai-forward:')) return;
