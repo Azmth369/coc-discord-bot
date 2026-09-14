@@ -15,6 +15,7 @@ const conflictKeys = {
   wars: 'war_key',
   war_members: 'war_key,clan_tag,player_tag',
   war_attacks: 'war_key,clan_tag,attacker_tag,order_no',
+  attack_log: 'attack_key',
   cwl_seasons: 'season_key',
   cwl_rounds: 'season_key,round_no',
   cwl_wars: 'war_tag',
