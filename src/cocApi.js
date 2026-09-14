@@ -19,8 +19,12 @@ export async function cocGet(path) {
   return res.json();
 }
 
-export const getClan = () => cocGet(`/clans/${encodeTag(process.env.COC_CLAN_TAG)}`);
-export const getCurrentWar = () => cocGet(`/clans/${encodeTag(process.env.COC_CLAN_TAG)}/currentwar`);
-export const getWarLog = () => cocGet(`/clans/${encodeTag(process.env.COC_CLAN_TAG)}/warlog`);
-export const getCapitalRaids = () => cocGet(`/clans/${encodeTag(process.env.COC_CLAN_TAG)}/capitalraidseasons`);
+const clan = () => encodeTag(process.env.COC_CLAN_TAG);
+
+export const getClan = () => cocGet(`/clans/${clan()}`);
+export const getCurrentWar = () => cocGet(`/clans/${clan()}/currentwar`);
+export const getWarLog = () => cocGet(`/clans/${clan()}/warlog`);
+export const getCapitalRaids = () => cocGet(`/clans/${clan()}/capitalraidseasons`);
+export const getCwlGroup = () => cocGet(`/clans/${clan()}/currentwar/leaguegroup`);
+export const getCwlWar = (warTag) => cocGet(`/clanwarleagues/wars/${encodeTag(warTag)}`);
 export const getPlayer = (tag) => cocGet(`/players/${encodeTag(tag)}`);
