@@ -16,7 +16,16 @@ const ROLE_NAMES = { leader: 'Leader', coleader: 'Co-Leader', admin: 'Elder', me
 
 function classify(question) {
   const q = question.toLowerCase();
-  return { member: MEMBER.test(q), war: WAR.test(q), capital: CAPITAL.test(q), cwl: CWL.test(q), history: MONTHS.test(q), eventGrouping: EVENT_GROUPING.test(q) };
+  const capital = CAPITAL.test(q);
+  const cwl = CWL.test(q);
+  return {
+    member: MEMBER.test(q),
+    war: WAR.test(q) && !capital && !cwl,
+    capital,
+    cwl,
+    history: MONTHS.test(q),
+    eventGrouping: EVENT_GROUPING.test(q)
+  };
 }
 
 function extractOpponent(question) { const m = question.match(/(?:against|vs\.?|versus)\s+["']?([^"'?.!,]+)["']?/i); return m?.[1]?.trim() || null; }
@@ -30,128 +39,51 @@ function buildMemberSummary(players) {
   return { total:players.length, counts:Object.fromEntries(Object.entries(grouped).map(([role,list])=>[role,list.length])), leaders:grouped.Leader, co_leaders:grouped['Co-Leader'], elders:grouped.Elder, members:grouped.Member, role_mapping:"CoC API raw role 'leader' = Leader, 'coLeader' (case-insensitive) = Co-Leader, 'admin' = Elder, 'member' = Member." };
 }
 
-async function buildCapitalGrouping() {
-  const seasons = await getCapitalSeasons(50);
-  const attacks = await getCapitalAttacks({ limit: 1000 });
-  return compactCapitalRaidContext(seasons, attacks);
-}
-
-async function buildWarGrouping() {
-  const wars = await searchWars('', 100);
-  const attackSets = await Promise.all(wars.map(w => getWarAttacks(w.war_key, 500)));
-  const attacks = attackSets.flat();
-  return compactWarAttackContext(wars, attacks);
-}
-
-async function buildCwlGrouping() {
-  const seasons = await getCwlSeasons(50);
-  const wars = await getCwlWars(null, 100);
-  const attacks = await getCwlAttacks({ limit: 1000 });
-  return compactCwlAttackContext(seasons, wars, attacks);
-}
+async function buildCapitalGrouping() { const seasons=await getCapitalSeasons(50); const attacks=await getCapitalAttacks({limit:1000}); return compactCapitalRaidContext(seasons,attacks); }
+async function buildWarGrouping() { const wars=await searchWars('',100); const attackSets=await Promise.all(wars.map(w=>getWarAttacks(w.war_key,500))); return compactWarAttackContext(wars,attackSets.flat()); }
+async function buildCwlGrouping() { const seasons=await getCwlSeasons(50); const wars=await getCwlWars(null,100); const attacks=await getCwlAttacks({limit:1000}); return compactCwlAttackContext(seasons,wars,attacks); }
 
 async function buildContext(question) {
   const kind=classify(question), context={retrieval:kind};
   const players=kind.member||kind.history?normalizePlayers(await getPlayers({limit:100})):[];
   if(players.length) context.players=players;
-
-  if (kind.member && players.length) {
-    context.member_summary = buildMemberSummary(players);
+  if(kind.member&&players.length){
+    context.member_summary=buildMemberSummary(players);
     const q=question.toLowerCase();
-    if (/\belders?\b/.test(q)) context.requested_role={label:'Elder',raw_role:'admin',requested_members:context.member_summary.elders};
-    else if (/co-?leaders?/.test(q)) context.requested_role={label:'Co-Leader',raw_role:'coLeader',requested_members:context.member_summary.co_leaders};
-    else if (/\bleaders?\b/.test(q)) context.requested_role={label:'Leader',raw_role:'leader',requested_members:context.member_summary.leaders};
+    if(/\belders?\b/.test(q)) context.requested_role={label:'Elder',raw_role:'admin',requested_members:context.member_summary.elders};
+    else if(/co-?leaders?/.test(q)) context.requested_role={label:'Co-Leader',raw_role:'coLeader',requested_members:context.member_summary.co_leaders};
+    else if(/\bleaders?\b/.test(q)) context.requested_role={label:'Leader',raw_role:'leader',requested_members:context.member_summary.leaders};
   }
-
   const opponent=extractOpponent(question);
   if(kind.war){
-    const current=await getCurrentWar();
-    context.current_war=current;
-    if(current?.war_key){
-      context.current_war_members=enrichWarMembers(await getWarMembers(current.war_key));
-      context.current_war_attacks=await getWarAttacks(current.war_key);
-    }
-    if(kind.eventGrouping){
-      context.war_event_categories=await buildWarGrouping();
-    } else {
-      let wars=opponent?await searchWars(opponent,25):await searchWars('',25);
-      if(opponent&&wars.length===0) wars=await searchWars('',25);
-      context.wars=wars;
-      if(opponent&&wars.length){
-        context.war_details=[];
-        for(const war of wars.slice(0,5)) context.war_details.push({war,members:enrichWarMembers(await getWarMembers(war.war_key)),attacks:await getWarAttacks(war.war_key)});
-      }
-    }
+    const current=await getCurrentWar(); context.current_war=current;
+    if(current?.war_key){context.current_war_members=enrichWarMembers(await getWarMembers(current.war_key));context.current_war_attacks=await getWarAttacks(current.war_key);}
+    if(kind.eventGrouping) context.war_event_categories=await buildWarGrouping();
+    else { let wars=opponent?await searchWars(opponent,25):await searchWars('',25); if(opponent&&wars.length===0) wars=await searchWars('',25); context.wars=wars; if(opponent&&wars.length){context.war_details=[];for(const war of wars.slice(0,5)) context.war_details.push({war,members:enrichWarMembers(await getWarMembers(war.war_key)),attacks:await getWarAttacks(war.war_key)});}}
   }
-
   if(kind.capital){
     const seasons=await getCapitalSeasons(50);
-    if(kind.eventGrouping){
-      context.capital_raid_categories=await buildCapitalGrouping();
-    } else {
-      context.capital_raids=seasons.map(row=>{const d=row.data??{};return {season_key:row.season_key,start_time:d.startTime??null,end_time:d.endTime??null,state:d.state??null,capital_total_loot:d.capitalTotalLoot??0,raids_completed:d.raidsCompleted??0,total_attacks:d.totalAttacks??0,enemy_districts_destroyed:d.enemyDistrictsDestroyed??0,offensive_reward:d.offensiveReward??0,defensive_reward:d.defensiveReward??0};});
-      context.capital_attacks=await getCapitalAttacks({limit:300});
-    }
-    const leaderboard=await capitalPlayerLeaderboard(12);
-    context.capital_player_rankings={by_capital_gold:[...leaderboard].sort((a,b)=>b.capital_gold-a.capital_gold).slice(0,20),by_stars:[...leaderboard].sort((a,b)=>b.stars-a.stars||b.capital_gold-a.capital_gold).slice(0,20),note:'capital_gold is capital resources looted by the member across synced raid seasons; stars is the sum of individual attack stars when attack details are available.'};
+    if(kind.eventGrouping) context.capital_raid_categories=await buildCapitalGrouping();
+    else {context.capital_raids=seasons.map(row=>{const d=row.data??{};return {season_key:row.season_key,start_time:d.startTime??null,end_time:d.endTime??null,state:d.state??null,capital_total_loot:d.capitalTotalLoot??0,raids_completed:d.raidsCompleted??0,total_attacks:d.totalAttacks??0,enemy_districts_destroyed:d.enemyDistrictsDestroyed??0,offensive_reward:d.offensiveReward??0,defensive_reward:d.defensiveReward??0};});context.capital_attacks=await getCapitalAttacks({limit:300});}
+    const leaderboard=await capitalPlayerLeaderboard(12);context.capital_player_rankings={by_capital_gold:[...leaderboard].sort((a,b)=>b.capital_gold-a.capital_gold).slice(0,20),by_stars:[...leaderboard].sort((a,b)=>b.stars-a.stars||b.capital_gold-a.capital_gold).slice(0,20),note:'capital_gold is capital resources looted by the member across synced raid seasons; stars is the sum of individual attack stars when attack details are available.'};
   }
-
-  if(kind.cwl){
-    if(kind.eventGrouping) context.cwl_event_categories=await buildCwlGrouping();
-    else { context.cwl=await getCwlSeasons(50); context.cwl_wars=await getCwlWars(null,100); context.cwl_attacks=await getCwlAttacks({limit:500}); }
-  }
-
-  if(kind.history){
-    const player=extractPlayerName(question,players);
-    if(player) context.player_snapshots=await getSnapshots(player.tag,null,500);
-    context.historical_war_attacks=await getWarAttacksForHistory(player?.tag);
-    context.historical_cwl_attacks=await getCwlAttacks({attackerTag:player?.tag,limit:300});
-    context.historical_capital_attacks=await getCapitalAttacks({attackerTag:player?.tag,limit:300});
-  }
+  if(kind.cwl){if(kind.eventGrouping) context.cwl_event_categories=await buildCwlGrouping();else {context.cwl=await getCwlSeasons(50);context.cwl_wars=await getCwlWars(null,100);context.cwl_attacks=await getCwlAttacks({limit:500});}}
+  if(kind.history){const player=extractPlayerName(question,players);if(player) context.player_snapshots=await getSnapshots(player.tag,null,500);context.historical_war_attacks=await getWarAttacksForHistory(player?.tag);context.historical_cwl_attacks=await getCwlAttacks({attackerTag:player?.tag,limit:300});context.historical_capital_attacks=await getCapitalAttacks({attackerTag:player?.tag,limit:300});}
   if(Object.keys(context).length===1){context.players=players.length?players:normalizePlayers(await getPlayers({limit:100}));context.current_war=await getCurrentWar();}
   return context;
 }
 
-async function getWarAttacksForHistory(playerTag) {
-  if (!playerTag) return [];
-  const wars=await searchWars('',100); const rows=[];
-  const attackSets=await Promise.all(wars.map(w=>getWarAttacks(w.war_key,500)));
-  for(const attacks of attackSets) rows.push(...attacks.filter(a=>a.attacker_tag===playerTag));
-  return rows;
-}
+async function getWarAttacksForHistory(playerTag){if(!playerTag)return[];const wars=await searchWars('',100);const attackSets=await Promise.all(wars.map(w=>getWarAttacks(w.war_key,500)));return attackSets.flat().filter(a=>a.attacker_tag===playerTag);}
 
-async function generateGemini(model,key,body){
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!res.ok){const message=await res.text();const error=new Error(`Gemini ${res.status}: ${message}`);error.status=res.status;throw error;}
-  const json=await res.json();
-  return json.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'No answer generated.';
-}
+async function generateGemini(model,key,body){const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!res.ok){const message=await res.text();const error=new Error(`Gemini ${res.status}: ${message}`);error.status=res.status;throw error;}const json=await res.json();return json.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'No answer generated.';}
 
 const ANSWER_SCOPE=`Answer the user's exact question and nothing more. Do not dump the full member list, all roles, tags, or unrelated statistics unless explicitly asked. If the user asks for a count, give the count and brief explanation only. If the user asks for names, give names only. If the user asks for names and tags, give names with tags. If the user asks for a specific role, do not list other roles. If the user gives an expected number such as '7 elders', treat it as a request/constraint to verify. For current-war participant questions, return names only unless more is requested. For event categorization questions, use the deterministic event-grouping context as the authoritative mapping of records to periods/events. If a period exists but has no individual attack rows, say so instead of inventing attacks. Do not repeat large raw DATABASE CONTEXT blocks.`;
 const CLAN_CHAT_RULES=`CLAN CHAT / CLAN MAIL REFERENCE RULES: Each individual clan-chat message must be 128 characters or fewer; a single prompt/message may tag at most 5 clan members. If drafting a clan-chat message would exceed 128 characters, rewrite it to fit. Multiple separate clan-chat messages each have their own 128-character limit. Clan Mail uses the supplied reference limit of up to 500 characters and 14-day persistence. Do not confuse these limits.`;
 const SYSTEM_BASE=`You are a Clash of Clans clan analyst and general Clash of Clans knowledge assistant. Use database context for clan-specific facts. For general Clash of Clans rules, mechanics, limits and terminology not in the database, use your general knowledge and reasoning. Clearly distinguish general game knowledge from clan-specific database facts. Never invent clan-specific data.\n\n${ANSWER_SCOPE}\n\n${CLAN_CHAT_RULES}\n\nROLE MAPPING: raw 'leader'=Leader, 'coLeader'=Co-Leader, 'admin'=Elder, 'member'=Member. Do not interpret 'admin' as a Discord/server administrator.\n\nClan War, CWL and Capital attacks are separate datasets and must never be mixed. attack_time is the source timestamp only when provided; observed_at is when sync first saw the attack.`;
 
-async function askGemini(question,context){
-  const key=process.env.GEMINI_API_KEY;if(!key)throw new Error('GEMINI_API_KEY is required');
-  const configured=process.env.GEMINI_MODEL||'gemini-3.8-flash';
-  const supported=['gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'];
-  const models=[supported.includes(configured)?configured:'gemini-3.8-flash',...supported].filter((m,i,a)=>a.indexOf(m)===i);
-  const body={system_instruction:{parts:[{text:SYSTEM_BASE}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}]}],generationConfig:{thinkingConfig:{thinkingLevel:'low'},maxOutputTokens:1200}};
-  let last;
-  for(const model of models){try{console.log(`[ai] trying Gemini model ${model} (low thinking)`);return await generateGemini(model,key,body);}catch(error){last=error;if([404,408,429,500,502,503,504].includes(error.status))continue;throw error;}}
-  throw last||new Error('No Gemini model was available');
-}
+async function askGemini(question,context){const key=process.env.GEMINI_API_KEY;if(!key)throw new Error('GEMINI_API_KEY is required');const configured=process.env.GEMINI_MODEL||'gemini-3.8-flash';const supported=['gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'];const models=[supported.includes(configured)?configured:'gemini-3.8-flash',...supported].filter((m,i,a)=>a.indexOf(m)===i);const body={system_instruction:{parts:[{text:SYSTEM_BASE}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}]}],generationConfig:{thinkingConfig:{thinkingLevel:'low'},maxOutputTokens:1200}};let last;for(const model of models){try{return await generateGemini(model,key,body);}catch(error){last=error;if([404,408,429,500,502,503,504].includes(error.status))continue;throw error;}}throw last||new Error('No Gemini model was available');}
 
-async function askSarvam(question,context){
-  const key=process.env.SARVAM_API_KEY;if(!key)throw new Error('SARVAM_API_KEY is required for /ask');
-  const configured=process.env.SARVAM_MODEL||'sarvam-105b';
-  const model=configured==='sarvam-105b-conversations'?'sarvam-105b':configured;
-  const body={model,messages:[{role:'system',content:SYSTEM_BASE},{role:'user',content:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}],temperature:0.15,reasoning_effort:null,max_tokens:800};
-  const res=await fetch('https://api.sarvam.ai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','api-subscription-key':key},body:JSON.stringify(body)});
-  if(!res.ok){const message=await res.text();const error=new Error(`Sarvam ${res.status}: ${message}`);error.status=res.status;error.provider='Sarvam';error.providerBody=message;error.isQuotaOrRateLimit=res.status===429||/rate.?limit|quota|token limit|limit exceeded|too many requests/i.test(message);error.isContextWindow=/context window|prompt_tokens|max_tokens|exceeds the model context|too many tokens|payload.*large|request.*large/i.test(message);throw error;}
-  const json=await res.json();return json.choices?.[0]?.message?.content||'No answer generated.';
-}
+async function askSarvam(question,context){const key=process.env.SARVAM_API_KEY;if(!key)throw new Error('SARVAM_API_KEY is required for /ask');const configured=process.env.SARVAM_MODEL||'sarvam-105b';const model=configured==='sarvam-105b-conversations'?'sarvam-105b':configured;const body={model,messages:[{role:'system',content:SYSTEM_BASE},{role:'user',content:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}],temperature:0.15,reasoning_effort:null,max_tokens:800};const res=await fetch('https://api.sarvam.ai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','api-subscription-key':key},body:JSON.stringify(body)});if(!res.ok){const message=await res.text();const error=new Error(`Sarvam ${res.status}: ${message}`);error.status=res.status;error.provider='Sarvam';error.providerBody=message;error.isQuotaOrRateLimit=res.status===429||/rate.?limit|quota|token limit|limit exceeded|too many requests/i.test(message);error.isContextWindow=/context window|prompt_tokens|max_tokens|exceeds the model context|too many tokens|payload.*large|request.*large/i.test(message);throw error;}const json=await res.json();return json.choices?.[0]?.message?.content||'No answer generated.';}
 
 export async function answer(question){if(!question?.trim())throw new Error('Question cannot be empty');const clean=question.trim();return askSarvam(clean,await buildContext(clean));}
 export async function tell(question){if(!question?.trim())throw new Error('Question cannot be empty');const clean=question.trim();return askGemini(clean,await buildContext(clean));}
