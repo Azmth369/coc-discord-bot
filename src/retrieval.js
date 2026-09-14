@@ -15,8 +15,10 @@ export async function getPlayers(filters = {}) {
   return data ?? [];
 }
 
+// currentwar is the only source for individual normal Clan War attacks.
+// Keep warEnded so the final attack snapshot is captured before the API moves to notInWar.
 export async function getCurrentWar() {
-  const { data, error } = await db.from('wars').select('war_key,state,start_time,end_time,data').in('state', ['preparation', 'inWar']).order('start_time', { ascending: false }).limit(1);
+  const { data, error } = await db.from('wars').select('war_key,state,start_time,end_time,data').in('state', ['preparation', 'inWar', 'warEnded']).order('start_time', { ascending: false }).limit(1);
   if (error) throw error;
   return data?.[0] ?? null;
 }
