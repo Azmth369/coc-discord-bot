@@ -70,13 +70,17 @@ if (unsupportedRows.length) {
   throw new Error(`Unsupported context values found: ${[...new Set(unsupportedRows.map(r => r.context))].join(', ')}`);
 }
 
+// Legacy Capital events get their own namespace so they can never overwrite
+// a live/API-synced Capital season with the same start time.
+const capitalSeasonKey = row => `legacy:capital:${row.clan_tag}:${row.context_ref}`;
+
 const capitalAttackRows = [];
 for (const row of capitalRows) {
   const match = String(row.defender_tag).match(/^([^:]+):(\d+)$/);
   if (!match) throw new Error(`Cannot parse Capital defender tag: ${row.defender_tag}`);
   const [, opponentTag, districtId] = match;
   capitalAttackRows.push({
-    season_key: `${row.clan_tag}:${row.context_ref}`,
+    season_key: capitalSeasonKey(row),
     clan_tag: row.clan_tag,
     opponent_clan_tag: opponentTag,
     opponent_clan_name: row.defender_name?.replace(/\s+—\s+.*$/, '') || null,
@@ -96,7 +100,7 @@ for (const row of capitalRows) {
 
 const warAttackRows = [];
 for (const row of warRows) {
-  const warKey = `legacy:${row.clan_tag}:${row.context_ref}`;
+  const warKey = `legacy:war:${row.clan_tag}:${row.context_ref}`;
   warAttackRows.push({
     war_key: warKey,
     clan_tag: row.clan_tag,
@@ -118,10 +122,10 @@ if (capitalAttackRows.length) await upsert('capital_attacks', capitalAttackRows)
 if (warAttackRows.length) await upsert('war_attacks', warAttackRows);
 
 // Add lightweight historical event records so the AI can discover imported events
-// without pretending that missing war/Capital summary fields are known.
-const capitalSeasonKeys = [...new Set(capitalRows.map(r => `${r.clan_tag}:${r.context_ref}`))];
+// without pretending that missing summary fields are known.
+const capitalSeasonKeys = [...new Set(capitalRows.map(capitalSeasonKey))];
 for (const seasonKey of capitalSeasonKeys) {
-  const seasonRows = capitalRows.filter(r => `${r.clan_tag}:${r.context_ref}` === seasonKey);
+  const seasonRows = capitalRows.filter(r => capitalSeasonKey(r) === seasonKey);
   const opponents = [...new Set(seasonRows.map(r => r.defender_tag.split(':')[0]))];
   const { data: existing } = await db.from('capital_raids').select('season_key').eq('season_key', seasonKey).maybeSingle();
   if (!existing) {
@@ -140,9 +144,9 @@ for (const seasonKey of capitalSeasonKeys) {
   }
 }
 
-const warKeys = [...new Set(warRows.map(r => `legacy:${r.clan_tag}:${r.context_ref}`))];
+const warKeys = [...new Set(warRows.map(r => `legacy:war:${r.clan_tag}:${r.context_ref}`))];
 for (const warKey of warKeys) {
-  const eventRows = warRows.filter(r => `legacy:${r.clan_tag}:${r.context_ref}` === warKey);
+  const eventRows = warRows.filter(r => `legacy:war:${r.clan_tag}:${r.context_ref}` === warKey);
   const defenders = [...new Set(eventRows.map(r => r.defender_name).filter(Boolean))];
   const clans = [...new Set(eventRows.map(r => r.clan_tag))];
   await upsert('wars', [{
