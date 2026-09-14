@@ -1,4 +1,4 @@
-import { getPlayers, getCurrentWar, getWarMembers, getWarAttacks, getSnapshots, getCapitalSeasons } from './retrieval.js';
+import { getPlayers, getCurrentWar, getWarMembers, getWarAttacks, getSnapshots, getCapitalSeasons, getCapitalAttacks } from './retrieval.js';
 
 export async function currentWarAnalysis() {
   const war = await getCurrentWar();
@@ -74,39 +74,32 @@ function addPlayer(map, player, seasonKey) {
   return row;
 }
 
-function addAttackStats(map, attack) {
-  const attacker = attack?.attacker;
-  if (!attacker?.tag && !attacker?.name) return;
-  const row = addPlayer(map, attacker, null);
-  row.stars += Number(attack.stars ?? 0);
-  row.destruction += Number(attack.destructionPercent ?? 0);
-  row.attack_records += 1;
-}
-
 export async function capitalPlayerLeaderboard(seasons = 12) {
-  const rows = await getCapitalSeasons(seasons);
+  const seasonRows = await getCapitalSeasons(seasons);
   const players = new Map();
+  const seasonKeys = seasonRows.map(row => row.season_key).filter(Boolean);
 
-  for (const seasonRow of rows) {
+  // Member totals come from the official raid-season member objects.
+  for (const seasonRow of seasonRows) {
     const data = seasonRow?.data ?? {};
     const seasonKey = seasonRow?.season_key ?? data.startTime ?? data.endTime ?? null;
-
-    // The official API exposes member totals directly on each raid season.
     for (const member of data.members ?? []) addPlayer(players, member, seasonKey);
+  }
 
-    // Also calculate attack-level stars/destruction when attack details are available.
-    for (const entry of data.attackLog ?? []) {
-      for (const district of entry.districts ?? []) {
-        for (const attack of district.attacks ?? []) addAttackStats(players, attack);
-      }
-    }
+  // Attack-level stars/destruction come from the dedicated Capital table.
+  const attacks = await getCapitalAttacks({ limit: 1000 });
+  for (const attack of attacks) {
+    if (seasonKeys.length && !seasonKeys.includes(attack.season_key)) continue;
+    const row = addPlayer(players, { tag: attack.attacker_tag, name: attack.attacker_name }, attack.season_key);
+    if (!row) continue;
+    row.attacks += 1;
+    row.stars += Number(attack.stars ?? 0);
+    row.destruction += Number(attack.destruction_percentage ?? 0);
+    row.attack_records += 1;
   }
 
   return [...players.values()]
-    .map(row => ({
-      ...row,
-      avg_destruction: row.attack_records ? row.destruction / row.attack_records : 0
-    }))
+    .map(row => ({ ...row, avg_destruction: row.attack_records ? row.destruction / row.attack_records : 0 }))
     .sort((a, b) => b.capital_gold - a.capital_gold || b.stars - a.stars || b.attacks - a.attacks)
     .slice(0, 100);
 }
