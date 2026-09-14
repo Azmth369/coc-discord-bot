@@ -9,7 +9,22 @@ export const db = createClient(url, key, {
   auth: { autoRefreshToken: false, persistSession: false }
 });
 
+const conflictKeys = {
+  clans: 'tag',
+  players: 'tag',
+  wars: 'war_key',
+  war_members: 'war_key,clan_tag,player_tag',
+  war_attacks: 'war_key,clan_tag,attacker_tag,order_no',
+  cwl_seasons: 'season_key',
+  cwl_rounds: 'season_key,round_no',
+  cwl_wars: 'war_tag',
+  capital_raids: 'season_key'
+};
+
 export async function upsert(table, rows) {
-  const { error } = await db.from(table).upsert(rows);
+  if (!rows?.length) return;
+  const onConflict = conflictKeys[table];
+  const options = onConflict ? { onConflict } : undefined;
+  const { error } = await db.from(table).upsert(rows, options);
   if (error) throw error;
 }
