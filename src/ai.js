@@ -7,143 +7,28 @@ const WAR = /war|attack|defen|star|opponent|miss|hit|battle/i;
 const CAPITAL = /capital|raid/i;
 const CWL = /cwl|clan war league|league day/i;
 const MEMBER = /member|player|donat|troph|town hall|inactive|role|lowest|highest|who/i;
-
-function classify(question) {
-  const q = question.toLowerCase();
-  return { member: MEMBER.test(q), war: WAR.test(q), capital: CAPITAL.test(q), cwl: CWL.test(q), history: MONTHS.test(q) };
-}
-
-function extractOpponent(question) {
-  const m = question.match(/(?:against|vs\.?|versus)\s+["']?([^"'?.!,]+)["']?/i);
-  return m?.[1]?.trim() || null;
-}
-
-function extractPlayerName(question, players) {
-  const normalized = question.toLowerCase();
-  return [...players].sort((a, b) => b.name.length - a.name.length).find(p => normalized.includes(p.name.toLowerCase())) ?? null;
-}
-
-function enrichWarMembers(members) {
-  return members.map(m => ({ ...m, missed_attacks: Math.max(Number(m.attacks_available ?? 0) - Number(m.attacks_used ?? 0), 0) }));
-}
+function classify(question) { const q = question.toLowerCase(); return { member: MEMBER.test(q), war: WAR.test(q), capital: CAPITAL.test(q), cwl: CWL.test(q), history: MONTHS.test(q) }; }
+function extractOpponent(question) { const m = question.match(/(?:against|vs\.?|versus)\s+["']?([^"'?.!,]+)["']?/i); return m?.[1]?.trim() || null; }
+function extractPlayerName(question, players) { const normalized = question.toLowerCase(); return [...players].sort((a,b)=>b.name.length-a.name.length).find(p=>normalized.includes(p.name.toLowerCase())) ?? null; }
+function enrichWarMembers(members) { return members.map(m=>({...m, missed_attacks:Math.max(Number(m.attacks_available ?? 0)-Number(m.attacks_used ?? 0),0)})); }
 
 async function buildContext(question) {
-  const kind = classify(question);
-  const context = { retrieval: kind };
-  const players = kind.member || kind.history ? await getPlayers({ limit: 100 }) : [];
-  if (players.length) context.players = players;
-
-  if (kind.war) {
-    const current = await getCurrentWar();
-    context.current_war = current;
-    if (current?.war_key) {
-      context.current_war_members = enrichWarMembers(await getWarMembers(current.war_key));
-      context.current_war_attacks = await getWarAttacks(current.war_key);
-    }
-    const opponent = extractOpponent(question);
-    let wars = opponent ? await searchWars(opponent, 25) : await searchWars('', 25);
-    if (opponent && wars.length === 0) wars = await searchWars('', 25);
-    context.wars = wars;
-    if (opponent && wars.length) {
-      context.war_details = [];
-      for (const war of wars.slice(0, 5)) {
-        context.war_details.push({ war, members: enrichWarMembers(await getWarMembers(war.war_key)), attacks: await getWarAttacks(war.war_key) });
-      }
-    }
-  }
-
-  if (kind.capital) {
-    const capitalSeasons = await getCapitalSeasons(12);
-    context.capital_raids = capitalSeasons.map(row => {
-      const data = row.data ?? {};
-      return { season_key: row.season_key, start_time: data.startTime ?? null, end_time: data.endTime ?? null, state: data.state ?? null, capital_total_loot: data.capitalTotalLoot ?? 0, raids_completed: data.raidsCompleted ?? 0, total_attacks: data.totalAttacks ?? 0, enemy_districts_destroyed: data.enemyDistrictsDestroyed ?? 0, offensive_reward: data.offensiveReward ?? 0, defensive_reward: data.defensiveReward ?? 0 };
-    });
-    const leaderboard = await capitalPlayerLeaderboard(12);
-    context.capital_player_rankings = {
-      by_capital_gold: [...leaderboard].sort((a, b) => b.capital_gold - a.capital_gold).slice(0, 20),
-      by_stars: [...leaderboard].sort((a, b) => b.stars - a.stars || b.capital_gold - a.capital_gold).slice(0, 20),
-      note: 'capital_gold is capital resources looted by the member across synced raid seasons; stars is the sum of individual attack stars when attack details are available.'
-    };
-  }
-
-  if (kind.cwl) {
-    context.cwl = await getCwlSeasons(12);
-    context.cwl_wars = await getCwlWars(null, 50);
-  }
-
-  if (kind.history) {
-    const player = extractPlayerName(question, players);
-    if (player) context.player_snapshots = await getSnapshots(player.tag, null, 500);
-  }
-
-  if (Object.keys(context).length === 1) {
-    context.players = players.length ? players : await getPlayers({ limit: 100 });
-    context.current_war = await getCurrentWar();
-  }
+  const kind=classify(question), context={retrieval:kind};
+  const players=kind.member||kind.history?await getPlayers({limit:100}):[]; if(players.length) context.players=players;
+  if(kind.war){ const current=await getCurrentWar(); context.current_war=current; if(current?.war_key){context.current_war_members=enrichWarMembers(await getWarMembers(current.war_key)); context.current_war_attacks=await getWarAttacks(current.war_key);} const opponent=extractOpponent(question); let wars=opponent?await searchWars(opponent,25):await searchWars('',25); if(opponent&&wars.length===0) wars=await searchWars('',25); context.wars=wars; if(opponent&&wars.length){context.war_details=[]; for(const war of wars.slice(0,5)) context.war_details.push({war,members:enrichWarMembers(await getWarMembers(war.war_key)),attacks:await getWarAttacks(war.war_key)});}}
+  if(kind.capital){const seasons=await getCapitalSeasons(12); context.capital_raids=seasons.map(row=>{const d=row.data??{}; return {season_key:row.season_key,start_time:d.startTime??null,end_time:d.endTime??null,state:d.state??null,capital_total_loot:d.capitalTotalLoot??0,raids_completed:d.raidsCompleted??0,total_attacks:d.totalAttacks??0,enemy_districts_destroyed:d.enemyDistrictsDestroyed??0,offensive_reward:d.offensiveReward??0,defensive_reward:d.defensiveReward??0};}); const leaderboard=await capitalPlayerLeaderboard(12); context.capital_player_rankings={by_capital_gold:[...leaderboard].sort((a,b)=>b.capital_gold-a.capital_gold).slice(0,20),by_stars:[...leaderboard].sort((a,b)=>b.stars-a.stars||b.capital_gold-a.capital_gold).slice(0,20),note:'capital_gold is capital resources looted by the member across synced raid seasons; stars is the sum of individual attack stars when attack details are available.'};}
+  if(kind.cwl){context.cwl=await getCwlSeasons(12); context.cwl_wars=await getCwlWars(null,50);}
+  if(kind.history){const player=extractPlayerName(question,players); if(player) context.player_snapshots=await getSnapshots(player.tag,null,500);}
+  if(Object.keys(context).length===1){context.players=players.length?players:await getPlayers({limit:100}); context.current_war=await getCurrentWar();}
   return context;
 }
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function generateGemini(model,key,body,attempt=0){const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`; const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); if(!res.ok){const message=await res.text(); const error=new Error(`Gemini ${res.status}: ${message}`); error.status=res.status; if([408,429,500,502,503,504].includes(res.status)&&attempt<2){const delay=1200*(2**attempt)+Math.floor(Math.random()*400); console.warn(`[ai] ${model} returned ${res.status}; retrying in ${delay}ms`); await sleep(delay); return generateGemini(model,key,body,attempt+1);} throw error;} const json=await res.json(); return json.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'No answer generated.';}
 
-async function generateGemini(model, key, body, attempt = 0) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) {
-    const message = await res.text();
-    const error = new Error(`Gemini ${res.status}: ${message}`);
-    error.status = res.status;
-    if ([408, 429, 500, 502, 503, 504].includes(res.status) && attempt < 2) {
-      const delay = 1200 * (2 ** attempt) + Math.floor(Math.random() * 400);
-      console.warn(`[ai] ${model} returned ${res.status}; retrying in ${delay}ms`);
-      await sleep(delay);
-      return generateGemini(model, key, body, attempt + 1);
-    }
-    throw error;
-  }
-  const json = await res.json();
-  return json.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || 'No answer generated.';
-}
+async function askGemini(question,context){const key=process.env.GEMINI_API_KEY;if(!key) throw new Error('GEMINI_API_KEY is required'); const configured=process.env.GEMINI_MODEL||'gemini-3.8-flash'; const models=[configured,'gemini-3.8-flash','gemini-3.7-flash','gemini-3.5-flash-lite','gemini-3.5-flash'].filter((m,i,a)=>m&&a.indexOf(m)===i); const system=`You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If context is insufficient, say what is missing. Calculate rankings from supplied values. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. Prefer targeted context and keep answers concise, useful, and data-backed.`; const body={system_instruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }]}],generationConfig:{temperature:0.15}}; let last; for(const model of models){try{console.log(`[ai] trying Gemini model ${model}`);return await generateGemini(model,key,body);}catch(error){last=error;if([404,408,429,500,502,503,504].includes(error.status)){console.warn(`[ai] ${model} unavailable (${error.status}); trying next Gemini model`);continue;}throw error;}} throw last||new Error('No Gemini model was available');}
 
-async function askGemini(question, context) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error('GEMINI_API_KEY is required');
-  const configuredModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-  const models = [configuredModel, 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash'].filter((m, i, a) => m && a.indexOf(m) === i);
-  const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For Clan Capital questions, treat capital_gold as the member's capital resources looted and stars as attack stars; if the user says "scored" without defining a metric, state which metric you are using. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Prefer targeted context over unrelated records. Keep answers concise, useful, and data-backed.`;
-  const body = { system_instruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: `${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }] }], generationConfig: { temperature: 0.15 } };
-  let lastError;
-  for (const model of models) {
-    try { console.log(`[ai] trying Gemini model ${model}`); return await generateGemini(model, key, body); }
-    catch (error) { lastError = error; if ([404, 408, 429, 500, 502, 503, 504].includes(error.status)) { console.warn(`[ai] ${model} unavailable (${error.status}); trying next Gemini model`); continue; } throw error; }
-  }
-  throw lastError || new Error('No Gemini model was available');
-}
+async function askSarvam(question,context){const key=process.env.SARVAM_API_KEY;if(!key) throw new Error('SARVAM_API_KEY is required for /ask'); const model=process.env.SARVAM_MODEL||'sarvam-105b-conversations'; const system=`You are a fast Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent stats, attacks, wars, dates, opponents, or outcomes. Distinguish current from historical data. Calculate rankings from supplied values. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. Prefer targeted context and keep the response concise, clear, and data-backed.`; const body={model,messages:[{role:'system',content:system},{role:'user',content:`${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}`}],temperature:0.15,max_tokens:1000}; const res=await fetch('https://api.sarvam.ai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','api-subscription-key':key},body:JSON.stringify(body)}); if(!res.ok){const message=await res.text();const error=new Error(`Sarvam ${res.status}: ${message}`);error.status=res.status;throw error;} const json=await res.json(); return json.choices?.[0]?.message?.content||'No answer generated.';}
 
-async function askSarvam(question, context) {
-  const key = process.env.SARVAM_API_KEY;
-  if (!key) throw new Error('SARVAM_API_KEY is required for /ask');
-  const model = process.env.SARVAM_MODEL || 'sarvam-105b';
-  const system = `You are a fast Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent stats, attacks, wars, dates, opponents, or outcomes. Distinguish current from historical data. Calculate rankings from supplied values. For Clan Capital, capital_gold means member capital resources looted and stars means attack stars. For missed attacks, use missed_attacks only when attacks_available is known. For CWL, do not confuse league wars with ordinary wars. Prefer targeted context and keep the response concise, clear, and data-backed.`;
-  const body = { model, messages: [{ role: 'system', content: system }, { role: 'user', content: `${question}\n\nDATABASE CONTEXT:\n${JSON.stringify(context)}` }], temperature: 0.15, max_tokens: 1200 };
-  const res = await fetch('https://api.sarvam.ai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'api-subscription-key': key }, body: JSON.stringify(body) });
-  if (!res.ok) {
-    const message = await res.text();
-    const error = new Error(`Sarvam ${res.status}: ${message}`);
-    error.status = res.status;
-    throw error;
-  }
-  const json = await res.json();
-  return json.choices?.[0]?.message?.content || 'No answer generated.';
-}
-
-export async function answer(question) {
-  if (!question?.trim()) throw new Error('Question cannot be empty');
-  const clean = question.trim();
-  return askSarvam(clean, await buildContext(clean));
-}
-
-export async function tell(question) {
-  if (!question?.trim()) throw new Error('Question cannot be empty');
-  const clean = question.trim();
-  return askGemini(clean, await buildContext(clean));
-}
+export async function answer(question){if(!question?.trim()) throw new Error('Question cannot be empty'); const clean=question.trim(); return askSarvam(clean,await buildContext(clean));}
+export async function tell(question){if(!question?.trim()) throw new Error('Question cannot be empty'); const clean=question.trim(); return askGemini(clean,await buildContext(clean));}
