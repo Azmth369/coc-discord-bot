@@ -27,53 +27,9 @@ export async function run(job, fn) {
   }
 }
 
-function attacksAvailableFor(state) {
-  return state === 'preparation' ? 0 : 2;
-}
+function attacksAvailableFor(state) { return state === 'preparation' ? 0 : 2; }
 
-async function saveWarAttackLog(war, tournamentType, tournamentId, tournamentName = null, seasonKey = null) {
-  const own = war.clan?.tag === clanTag ? war.clan : null;
-  const opponent = war.clan?.tag === clanTag ? war.opponent : war.clan;
-  if (!own) return 0;
-  const label = tournamentName ?? `${tournamentType === 'cwl' ? 'CWL War' : 'Clan War'}${opponent?.name ? ` vs ${opponent.name}` : ''}`;
-
-  const rows = [];
-  for (const m of own.members ?? []) {
-    for (const a of m.attacks ?? []) {
-      const orderNo = Number(a.order ?? 0) || null;
-      const attackKey = `${tournamentType}:${tournamentId}:${m.tag}:${orderNo ?? `${a.defenderTag ?? 'unknown'}:${a.stars ?? 0}:${a.destructionPercentage ?? 0}`}`;
-      rows.push({
-        attack_key: attackKey,
-        clan_tag: clanTag,
-        tournament_type: tournamentType,
-        tournament_id: String(tournamentId),
-        tournament_name: label,
-        season_key: seasonKey,
-        war_key: tournamentType === 'war' ? String(tournamentId) : tournamentType === 'cwl' ? `cwl:${tournamentId}` : null,
-        opponent_clan_tag: opponent?.tag ?? null,
-        opponent_clan_name: opponent?.name ?? null,
-        attacker_tag: m.tag,
-        attacker_name: m.name,
-        defender_tag: a.defenderTag ?? null,
-        defender_name: a.defenderName ?? opponent?.members?.find(x => x.tag === a.defenderTag)?.name ?? null,
-        district_id: null,
-        district_name: null,
-        attack_number: null,
-        order_no: orderNo,
-        stars: a.stars ?? null,
-        destruction_percentage: a.destructionPercentage ?? null,
-        duration_seconds: a.duration ?? null,
-        attack_time: iso(a.attackTime),
-        observed_at: now(),
-        data: a
-      });
-    }
-  }
-  if (rows.length) await upsert('attack_log', rows);
-  return rows.length;
-}
-
-async function normalizeWar(war, key, stateOverride = null, tournamentType = 'war', tournamentId = key, tournamentName = null, seasonKey = null) {
+async function normalizeWar(war, key, stateOverride = null, saveAttackTable = true) {
   const own = war.clan?.tag === clanTag ? war.clan : null;
   const opponent = war.clan?.tag === clanTag ? war.opponent : null;
   if (!own) return { members: 0, attacks: 0 };
@@ -81,6 +37,7 @@ async function normalizeWar(war, key, stateOverride = null, tournamentType = 'wa
   const available = attacksAvailableFor(state);
   const ownMembers = own.members ?? [];
   const opponentByTag = new Map((opponent?.members ?? []).map(m => [m.tag, m]));
+
   const memberRows = ownMembers.map(m => ({
     war_key: key, clan_tag: clanTag, player_tag: m.tag, player_name: m.name,
     map_position: m.mapPosition ?? null, attacks_available: available,
@@ -90,6 +47,9 @@ async function normalizeWar(war, key, stateOverride = null, tournamentType = 'wa
     data: m
   }));
   if (memberRows.length) await upsert('war_members', memberRows);
+
+  if (!saveAttackTable) return { members: memberRows.length, attacks: 0, state };
+
   const attackRows = [];
   for (const m of ownMembers) for (const a of m.attacks ?? []) {
     const defender = opponentByTag.get(a.defenderTag);
@@ -97,12 +57,34 @@ async function normalizeWar(war, key, stateOverride = null, tournamentType = 'wa
       war_key: key, clan_tag: clanTag, attacker_tag: m.tag, attacker_name: m.name,
       defender_tag: a.defenderTag ?? null, defender_name: a.defenderName ?? defender?.name ?? null,
       stars: a.stars ?? null, destruction_percentage: a.destructionPercentage ?? null,
-      order_no: a.order ?? attackRows.length + 1, attack_time: iso(a.attackTime), data: a
+      order_no: a.order ?? attackRows.length + 1,
+      duration_seconds: a.duration ?? null,
+      attack_time: iso(a.attackTime), observed_at: now(), data: a
     });
   }
   if (attackRows.length) await upsert('war_attacks', attackRows);
-  const logged = await saveWarAttackLog(war, tournamentType, tournamentId, tournamentName, seasonKey);
-  return { members: memberRows.length, attacks: attackRows.length, attackLog: logged, state };
+  return { members: memberRows.length, attacks: attackRows.length, state };
+}
+
+async function saveCwlAttacks(war, seasonKey, warTag, roundNo) {
+  const own = war.clan?.tag === clanTag ? war.clan : null;
+  const opponent = war.clan?.tag === clanTag ? war.opponent : war.clan;
+  if (!own) return 0;
+  const opponentByTag = new Map((opponent?.members ?? []).map(m => [m.tag, m]));
+  const rows = [];
+  for (const m of own.members ?? []) for (const a of m.attacks ?? []) {
+    const defender = opponentByTag.get(a.defenderTag);
+    rows.push({
+      season_key: seasonKey, war_tag: warTag, round_no: roundNo, clan_tag: clanTag,
+      attacker_tag: m.tag, attacker_name: m.name,
+      defender_tag: a.defenderTag ?? null, defender_name: a.defenderName ?? defender?.name ?? null,
+      stars: a.stars ?? null, destruction_percentage: a.destructionPercentage ?? null,
+      order_no: a.order ?? rows.length + 1, duration_seconds: a.duration ?? null,
+      attack_time: iso(a.attackTime), observed_at: now(), data: a
+    });
+  }
+  if (rows.length) await upsert('cwl_attacks', rows);
+  return rows.length;
 }
 
 export async function syncClan(captureSnapshots = false) {
@@ -128,7 +110,7 @@ export async function syncWar() {
   if (!war || war.state === 'notInWar') return { state: 'notInWar' };
   const key = warKey(war);
   await upsert('wars', [{ clan_tag: clanTag, war_key: key, state: war.state ?? null, start_time: iso(war.startTime), end_time: iso(war.endTime), data: war, synced_at: now() }]);
-  return { state: war.state, warKey: key, ...(await normalizeWar(war, key, null, 'war', key)) };
+  return { state: war.state, warKey: key, ...(await normalizeWar(war, key)) };
 }
 
 export async function syncHistory() {
@@ -136,7 +118,8 @@ export async function syncHistory() {
   for (const war of warlog.items ?? []) {
     const key = warKey(war);
     await upsert('wars', [{ clan_tag: clanTag, war_key: key, state: 'warlog', start_time: iso(war.startTime), end_time: iso(war.endTime), data: war, synced_at: now() }]);
-    await normalizeWar({ ...war, state: 'warlog' }, key, 'warlog', 'war', key);
+    // Ended warlog records are summary-only, so do not try to manufacture attack rows here.
+    await normalizeWar({ ...war, state: 'warlog' }, key, 'warlog', false);
   }
   return { wars: (warlog.items ?? []).length };
 }
@@ -164,8 +147,9 @@ export async function syncCwl() {
         await upsert('cwl_rounds', [{ clan_tag: clanTag, season_key: seasonKey, round_no: roundNo + 1, opponent_tag: opponent?.tag ?? null, opponent_name: opponent?.name ?? null, state: war.state ?? null, data: round }]);
         await upsert('cwl_wars', [{ season_key: seasonKey, war_tag: warTag, clan_tag: clanTag, opponent_clan_tag: opponent?.tag ?? null, opponent_name: opponent?.name ?? null, state: war.state ?? null, data: war, synced_at: now() }]);
         if (own) {
-          const result = await normalizeWar({ ...war, clan: own, state: war.state ?? 'warlog' }, `cwl:${warTag}`, war.state ?? 'warlog', 'cwl', warTag, opponent?.name ?? null, seasonKey);
-          attackLog += result.attackLog ?? 0;
+          const result = await normalizeWar({ ...war, clan: own, state: war.state ?? 'warlog' }, `cwl:${warTag}`, war.state ?? 'warlog', false);
+          attackLog += await saveCwlAttacks({ ...war, clan: own, opponent }, seasonKey, warTag, roundNo + 1);
+          result.attackLog = attackLog;
         }
         synced++;
       } catch (error) { console.error(`[cwl:${warTag}]`, error.message); }
@@ -186,31 +170,17 @@ function flattenCapitalAttacks(season, seasonKey) {
         const attacker = a.attacker ?? {};
         const attackerTag = attacker.tag ?? a.attackerTag ?? null;
         if (!attackerTag) continue;
-        const attackNumber = index + 1;
         rows.push({
-          attack_key: `capital:${seasonKey}:${attackerTag}:${districtId ?? districtName ?? 'unknown'}:${attackNumber}`,
-          clan_tag: clanTag,
-          tournament_type: 'capital',
-          tournament_id: seasonKey,
-          tournament_name: 'Clan Capital Raid Weekend',
-          season_key: seasonKey,
-          war_key: null,
-          opponent_clan_tag: opponent.tag ?? null,
-          opponent_clan_name: opponent.name ?? null,
-          attacker_tag: attackerTag,
-          attacker_name: attacker.name ?? null,
-          defender_tag: districtId != null ? String(districtId) : null,
-          defender_name: districtName,
-          district_id: districtId,
-          district_name: districtName,
-          attack_number: attackNumber,
-          order_no: null,
+          season_key: seasonKey, clan_tag: clanTag,
+          opponent_clan_tag: opponent.tag ?? null, opponent_clan_name: opponent.name ?? null,
+          attacker_tag: attackerTag, attacker_name: attacker.name ?? null,
+          district_id: districtId, district_name: districtName,
+          attack_number: index + 1,
           stars: a.stars ?? null,
           destruction_percentage: a.destructionPercent ?? a.destructionPercentage ?? null,
           duration_seconds: a.duration ?? null,
-          attack_time: iso(a.attackTime),
-          observed_at: now(),
-          data: { ...a, district: district }
+          attack_time: iso(a.attackTime), observed_at: now(),
+          data: { ...a, district }
         });
       }
     }
@@ -225,7 +195,7 @@ export async function syncCapital() {
     const key = `${clanTag}:${season.startTime ?? season.endTime ?? JSON.stringify(season)}`;
     await upsert('capital_raids', [{ clan_tag: clanTag, season_key: key, data: season, synced_at: now() }]);
     const rows = flattenCapitalAttacks(season, key);
-    if (rows.length) { await upsert('attack_log', rows); attackLog += rows.length; }
+    if (rows.length) { await upsert('capital_attacks', rows); attackLog += rows.length; }
   }
   return { seasons: (data.items ?? []).length, attackLog };
 }
