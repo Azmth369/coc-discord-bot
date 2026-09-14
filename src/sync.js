@@ -13,14 +13,16 @@ const iso = (s) => {
 
 const warKey = (war) => `${clanTag}:${war.startTime ?? war.createdDate ?? 'unknown'}:${war.endTime ?? 'unknown'}`;
 
-async function run(job, fn) {
+export async function run(job, fn) {
   const started = new Date().toISOString();
   try {
     const details = await fn();
     await db.from('sync_runs').insert({ job, status: 'ok', details, started_at: started, finished_at: new Date().toISOString() });
+    return details;
   } catch (error) {
     await db.from('sync_runs').insert({ job, status: 'error', details: { message: error.message }, started_at: started, finished_at: new Date().toISOString() });
     console.error(`[${job}]`, error);
+    return null;
   }
 }
 
@@ -28,12 +30,8 @@ async function normalizeWar(war, key, stateOverride = null) {
   const own = war.clan?.tag === clanTag ? war.clan : null;
   const members = own?.members ?? [];
   const memberRows = members.map(m => ({
-    war_key: key,
-    clan_tag: clanTag,
-    player_tag: m.tag,
-    player_name: m.name,
-    map_position: m.mapPosition ?? null,
-    attacks_available: 1,
+    war_key: key, clan_tag: clanTag, player_tag: m.tag, player_name: m.name,
+    map_position: m.mapPosition ?? null, attacks_available: 1,
     attacks_used: m.attacks?.length ?? 0,
     stars_earned: (m.attacks ?? []).reduce((sum, a) => sum + (a.stars ?? 0), 0),
     destruction_percentage: (m.attacks?.length ?? 0)
@@ -47,17 +45,10 @@ async function normalizeWar(war, key, stateOverride = null) {
   for (const m of members) {
     for (const a of m.attacks ?? []) {
       attackRows.push({
-        war_key: key,
-        clan_tag: clanTag,
-        attacker_tag: m.tag,
-        attacker_name: m.name,
-        defender_tag: a.defenderTag ?? null,
-        defender_name: a.defenderName ?? null,
-        stars: a.stars ?? null,
-        destruction_percentage: a.destructionPercentage ?? null,
-        order_no: a.order ?? null,
-        attack_time: iso(a.attackTime),
-        data: a
+        war_key: key, clan_tag: clanTag, attacker_tag: m.tag, attacker_name: m.name,
+        defender_tag: a.defenderTag ?? null, defender_name: a.defenderName ?? null,
+        stars: a.stars ?? null, destruction_percentage: a.destructionPercentage ?? null,
+        order_no: a.order ?? null, attack_time: iso(a.attackTime), data: a
       });
     }
   }
@@ -65,10 +56,9 @@ async function normalizeWar(war, key, stateOverride = null) {
   return { members: memberRows.length, attacks: attackRows.length, state: stateOverride ?? war.state };
 }
 
-async function syncClan(captureSnapshots = false) {
+export async function syncClan(captureSnapshots = false) {
   const clan = await getClan();
   await upsert('clans', [{ tag: clan.tag, data: clan, synced_at: new Date().toISOString() }]);
-
   const rows = (clan.memberList ?? []).map(m => ({
     tag: m.tag, clan_tag: clan.tag, name: m.name, role: m.role ?? null,
     town_hall_level: m.townHallLevel ?? null, trophies: m.trophies ?? null,
@@ -77,32 +67,26 @@ async function syncClan(captureSnapshots = false) {
     data: m, updated_at: new Date().toISOString()
   }));
   if (rows.length) await upsert('players', rows);
-
   if (captureSnapshots) {
     for (const m of clan.memberList ?? []) {
       try {
         const player = await getPlayer(m.tag);
         await db.from('player_snapshots').insert({ player_tag: m.tag, clan_tag: clan.tag, data: player });
-      } catch (error) {
-        console.error(`[player:${m.tag}]`, error.message);
-      }
+      } catch (error) { console.error(`[player:${m.tag}]`, error.message); }
     }
   }
   return { members: rows.length, snapshots: captureSnapshots };
 }
 
-async function syncWar() {
+export async function syncWar() {
   const war = await getCurrentWar();
   if (!war || war.state === 'notInWar') return { state: 'notInWar' };
   const key = warKey(war);
-  await upsert('wars', [{
-    clan_tag: clanTag, war_key: key, state: war.state ?? null,
-    start_time: iso(war.startTime), end_time: iso(war.endTime), data: war, synced_at: new Date().toISOString()
-  }]);
+  await upsert('wars', [{ clan_tag: clanTag, war_key: key, state: war.state ?? null, start_time: iso(war.startTime), end_time: iso(war.endTime), data: war, synced_at: new Date().toISOString() }]);
   return { state: war.state, warKey: key, ...(await normalizeWar(war, key)) };
 }
 
-async function syncHistory() {
+export async function syncHistory() {
   const warlog = await getWarLog();
   for (const war of warlog.items ?? []) {
     const key = warKey(war);
@@ -112,38 +96,25 @@ async function syncHistory() {
   return { wars: (warlog.items ?? []).length };
 }
 
-async function syncCwl() {
+export async function syncCwl() {
   const group = await getCwlGroup();
   if (!group || group.state === 'notInWar') return { state: group?.state ?? 'notInWar' };
   const seasonKey = `${clanTag}:${group.season ?? new Date().toISOString().slice(0, 7)}`;
   await upsert('cwl_seasons', [{ clan_tag: clanTag, season_key: seasonKey, data: group, synced_at: new Date().toISOString() }]);
   let synced = 0;
-  for (const round of group.rounds ?? []) {
-    for (const warTag of round.warTags ?? []) {
-      if (!warTag || warTag === '#0') continue;
-      try {
-        const war = await getCwlWar(warTag);
-        const opponent = war.clan?.tag === clanTag ? war.opponent : war.clan;
-        await upsert('cwl_wars', [{
-          season_key: seasonKey,
-          war_tag: warTag,
-          clan_tag: clanTag,
-          opponent_clan_tag: opponent?.tag ?? null,
-          opponent_name: opponent?.name ?? null,
-          state: war.state ?? null,
-          data: war,
-          synced_at: new Date().toISOString()
-        }]);
-        synced++;
-      } catch (error) {
-        console.error(`[cwl:${warTag}]`, error.message);
-      }
-    }
+  for (const round of group.rounds ?? []) for (const warTag of round.warTags ?? []) {
+    if (!warTag || warTag === '#0') continue;
+    try {
+      const war = await getCwlWar(warTag);
+      const opponent = war.clan?.tag === clanTag ? war.opponent : war.clan;
+      await upsert('cwl_wars', [{ season_key: seasonKey, war_tag: warTag, clan_tag: clanTag, opponent_clan_tag: opponent?.tag ?? null, opponent_name: opponent?.name ?? null, state: war.state ?? null, data: war, synced_at: new Date().toISOString() }]);
+      synced++;
+    } catch (error) { console.error(`[cwl:${warTag}]`, error.message); }
   }
   return { state: group.state, seasonKey, wars: synced };
 }
 
-async function syncCapital() {
+export async function syncCapital() {
   const data = await getCapitalRaids();
   for (const season of data.items ?? []) {
     const key = `${clanTag}:${season.startTime ?? season.endTime ?? JSON.stringify(season)}`;
