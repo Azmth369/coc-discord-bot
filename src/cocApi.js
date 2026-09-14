@@ -12,7 +12,12 @@ export async function cocGet(path) {
   const res = await fetch(`${base}${path}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
   });
-  if (!res.ok) throw new Error(`CoC API ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const body = await res.text();
+    const error = new Error(`CoC API ${res.status}: ${body}`);
+    error.status = res.status;
+    throw error;
+  }
   return res.json();
 }
 
