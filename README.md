@@ -1,6 +1,13 @@
 # Clash of Clans Discord AI Bot
 
-A production-oriented Discord assistant combining **Clash of Clans API data, a dedicated Supabase database, targeted retrieval, deterministic analytics, and Gemini AI**.
+A production-oriented Discord assistant combining **Clash of Clans API data, a dedicated Supabase database, targeted retrieval, deterministic analytics, and two AI providers**.
+
+## Commands
+
+- `/ask` → **Sarvam AI** for the normal, faster/low-cost clan analysis path.
+- `/tell` → **Gemini** for the deeper Gemini analysis path.
+
+Both commands use the same database retrieval and analytics layer, so they answer from the same Clash of Clans data rather than from unrelated general knowledge.
 
 ## Architecture
 
@@ -13,14 +20,16 @@ Clash of Clans API
                           │ read-only
                           ▼
                   Retrieval + Analytics
-                          │
-                          ▼
-                    Gemini AI core
-                          │
-                          ▼
-                     Discord /ask
-                          │
-                          └── Forward button → configured AI channel
+                     │           │
+                     ▼           ▼
+                 Sarvam AI    Gemini AI
+                     │           │
+                     └─────┬─────┘
+                           ▼
+                        Discord
+                 /ask            /tell
+                           │
+                           └── Forward button → configured AI channel
 ```
 
 This project is independent of the existing CoC watcher database. The sync layer owns the CoC API and Supabase service-role credentials; Discord/AI only reads through the anonymous/read-only key.
@@ -47,8 +56,8 @@ Examples:
 /ask question:"who has the lowest donations?"
 /ask question:"who didn't attack in the current war?"
 /ask question:"how are we doing in the current war?"
-/ask question:"summarize our wars against Dark Land"
-/ask question:"show me the attacks from our war against XYZ"
+/tell question:"summarize our wars against Dark Land"
+/tell question:"show me the attacks from our war against XYZ"
 /ask question:"what happened in March 2026?"
 ```
 
@@ -57,18 +66,24 @@ Retrieval follows the intended safe-expansion strategy:
 1. Match the question to a data domain.
 2. Retrieve the narrowest useful context.
 3. If a named opponent search returns nothing, expand to recent war history.
-4. Give Gemini only the resulting context.
-5. Gemini must never invent missing statistics, attacks, dates, opponents or outcomes.
+4. Give the selected context to the requested AI provider.
+5. The provider must never invent missing statistics, attacks, dates, opponents or outcomes.
+
+### Two AI providers
+
+`/ask` uses Sarvam's OpenAI-compatible Chat Completions API. `SARVAM_MODEL` can be set to `sarvam-105b`; the code defaults to that model.
+
+`/tell` uses the Gemini REST API with the existing model fallback/retry chain. `GEMINI_MODEL` controls the preferred Gemini model.
 
 ### Deterministic analytics
 The application calculates evidence such as missed attacks and player trends in code before AI interpretation. This reduces hallucination risk for straightforward numerical questions.
 
 ### Discord forwarding
-`/ask` responses can show a **Forward to AI channel** button. Set `AI_FORWARD_CHANNEL_ID` to the target text-channel ID. The answer is kept temporarily in memory and can only be forwarded by the user who requested it.
+Both `/ask` and `/tell` responses can show a **Forward to AI channel** button. Set `AI_FORWARD_CHANNEL_ID` to the target text-channel ID. The answer is kept temporarily in memory and can only be forwarded by the user who requested it.
 
 ## Environment
 
-Copy `.env.example` into your hosting environment and configure:
+Configure:
 
 - `COC_API_TOKEN`
 - `COC_CLAN_TAG`
@@ -79,7 +94,10 @@ Copy `.env.example` into your hosting environment and configure:
 - `DISCORD_CLIENT_ID`
 - optional `DISCORD_GUILD_ID` for instant guild command registration
 - optional `AI_FORWARD_CHANNEL_ID`
-- `GEMINI_API_KEY`
+- `SARVAM_API_KEY` — required for `/ask`
+- optional `SARVAM_MODEL` (defaults to `sarvam-105b`)
+- `GEMINI_API_KEY` — required for `/tell`
+- optional `GEMINI_MODEL`
 
 Never commit secrets.
 
@@ -96,7 +114,7 @@ npm install
 npm start
 ```
 
-`npm start` launches both the Discord bot and sync scheduler. A lightweight HTTP health endpoint is available at `/health` on `PORT` (default `3000`), which is useful for Replit-style deployments.
+`npm start` launches both the Discord bot and sync scheduler. A lightweight HTTP health endpoint is available at `/health` on `PORT` (default `3000`).
 
 Run only the sync scheduler:
 
@@ -110,10 +128,6 @@ Run one complete sync pass:
 npm run sync:once
 ```
 
-## Replit deployment
-
-The repository includes `.replit` configuration and uses `npm start` as the production command. Add the environment variables as Replit Secrets, then deploy the project as a long-running service.
-
 ## Security model
 
 ```text
@@ -126,7 +140,3 @@ CoC API token ──► sync service ──write──► Supabase
 ```
 
 Do not give the Discord bot the Supabase service-role key.
-
-## Current status
-
-The repository contains the core sync, database, retrieval, analytics, AI, Discord forwarding, and Replit runtime pieces. Live deployment still requires the user's own API keys, Discord application configuration, and separate Supabase project/schema setup.
