@@ -35,6 +35,7 @@ async function saveWarAttackLog(war, tournamentType, tournamentId, tournamentNam
   const own = war.clan?.tag === clanTag ? war.clan : null;
   const opponent = war.clan?.tag === clanTag ? war.opponent : war.clan;
   if (!own) return 0;
+  const label = tournamentName ?? `${tournamentType === 'cwl' ? 'CWL War' : 'Clan War'}${opponent?.name ? ` vs ${opponent.name}` : ''}`;
 
   const rows = [];
   for (const m of own.members ?? []) {
@@ -46,7 +47,7 @@ async function saveWarAttackLog(war, tournamentType, tournamentId, tournamentNam
         clan_tag: clanTag,
         tournament_type: tournamentType,
         tournament_id: String(tournamentId),
-        tournament_name: tournamentName,
+        tournament_name: label,
         season_key: seasonKey,
         war_key: tournamentType === 'war' ? String(tournamentId) : tournamentType === 'cwl' ? `cwl:${tournamentId}` : null,
         opponent_clan_tag: opponent?.tag ?? null,
@@ -76,12 +77,10 @@ async function normalizeWar(war, key, stateOverride = null, tournamentType = 'wa
   const own = war.clan?.tag === clanTag ? war.clan : null;
   const opponent = war.clan?.tag === clanTag ? war.opponent : null;
   if (!own) return { members: 0, attacks: 0 };
-
   const state = stateOverride ?? war.state;
   const available = attacksAvailableFor(state);
   const ownMembers = own.members ?? [];
   const opponentByTag = new Map((opponent?.members ?? []).map(m => [m.tag, m]));
-
   const memberRows = ownMembers.map(m => ({
     war_key: key, clan_tag: clanTag, player_tag: m.tag, player_name: m.name,
     map_position: m.mapPosition ?? null, attacks_available: available,
@@ -91,7 +90,6 @@ async function normalizeWar(war, key, stateOverride = null, tournamentType = 'wa
     data: m
   }));
   if (memberRows.length) await upsert('war_members', memberRows);
-
   const attackRows = [];
   for (const m of ownMembers) for (const a of m.attacks ?? []) {
     const defender = opponentByTag.get(a.defenderTag);
@@ -103,7 +101,6 @@ async function normalizeWar(war, key, stateOverride = null, tournamentType = 'wa
     });
   }
   if (attackRows.length) await upsert('war_attacks', attackRows);
-
   const logged = await saveWarAttackLog(war, tournamentType, tournamentId, tournamentName, seasonKey);
   return { members: memberRows.length, attacks: attackRows.length, attackLog: logged, state };
 }
@@ -146,9 +143,8 @@ export async function syncHistory() {
 
 export async function syncCwl() {
   let group;
-  try {
-    group = await getCwlGroup();
-  } catch (error) {
+  try { group = await getCwlGroup(); }
+  catch (error) {
     if (error.status === 404 && /notFound/i.test(error.message)) return { state: 'notInCwl' };
     throw error;
   }
@@ -165,11 +161,7 @@ export async function syncCwl() {
         const war = await getCwlWar(warTag);
         const own = war.clan?.tag === clanTag ? war.clan : war.opponent;
         const opponent = war.clan?.tag === clanTag ? war.opponent : war.clan;
-        await upsert('cwl_rounds', [{
-          clan_tag: clanTag, season_key: seasonKey, round_no: roundNo + 1,
-          opponent_tag: opponent?.tag ?? null, opponent_name: opponent?.name ?? null,
-          state: war.state ?? null, data: round
-        }]);
+        await upsert('cwl_rounds', [{ clan_tag: clanTag, season_key: seasonKey, round_no: roundNo + 1, opponent_tag: opponent?.tag ?? null, opponent_name: opponent?.name ?? null, state: war.state ?? null, data: round }]);
         await upsert('cwl_wars', [{ season_key: seasonKey, war_tag: warTag, clan_tag: clanTag, opponent_clan_tag: opponent?.tag ?? null, opponent_name: opponent?.name ?? null, state: war.state ?? null, data: war, synced_at: now() }]);
         if (own) {
           const result = await normalizeWar({ ...war, clan: own, state: war.state ?? 'warlog' }, `cwl:${warTag}`, war.state ?? 'warlog', 'cwl', warTag, opponent?.name ?? null, seasonKey);
@@ -233,10 +225,7 @@ export async function syncCapital() {
     const key = `${clanTag}:${season.startTime ?? season.endTime ?? JSON.stringify(season)}`;
     await upsert('capital_raids', [{ clan_tag: clanTag, season_key: key, data: season, synced_at: now() }]);
     const rows = flattenCapitalAttacks(season, key);
-    if (rows.length) {
-      await upsert('attack_log', rows);
-      attackLog += rows.length;
-    }
+    if (rows.length) { await upsert('attack_log', rows); attackLog += rows.length; }
   }
   return { seasons: (data.items ?? []).length, attackLog };
 }
@@ -249,7 +238,4 @@ export async function syncOnce({ captureSnapshots = false, includeCwl = true } =
   if (includeCwl) await run('cwl', syncCwl);
 }
 
-if (process.argv[1]?.endsWith('/sync.js')) {
-  await syncOnce({ captureSnapshots: true });
-  console.log('Sync complete');
-}
+if (process.argv[1]?.endsWith('/sync.js')) { await syncOnce({ captureSnapshots: true }); console.log('Sync complete'); }
