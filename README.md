@@ -1,67 +1,136 @@
 # Clash of Clans Discord Bot
 
-A Discord bot designed to connect **Clash of Clans clan data, AI-powered analysis, and Discord** into one system.
+A dedicated Discord assistant that combines **Clash of Clans API data, a separate Supabase database, intelligent retrieval, and AI-powered answers**.
 
-## Overview
-
-This project is being built as a dedicated Discord assistant for a Clash of Clans clan. It will periodically retrieve clan and member information from the **Clash of Clans API**, maintain its own synchronized database, and make that information available through Discord.
-
-The long-term goal is to make it possible for clan members and leaders to ask natural-language questions about the clan and receive useful, data-backed answers without manually checking multiple sources.
-
-## Core Components
-
-- **Clash of Clans API** — provides current clan and player data.
-- **Database** — stores synchronized clan/member information and, where useful, historical data.
-- **Discord Bot** — provides the interface for clan members to interact with the system.
-- **AI Layer** — interprets questions, retrieves relevant data, and generates natural-language analysis.
-
-## Planned Features
-
-- 🔄 Automatic periodic synchronization of clan and member data
-- 🗄️ Dedicated database for current and historical clan information
-- 🤖 AI-powered questions and answers about clan members and activity
-- 📊 Member statistics and performance analysis
-- 🔎 Intelligent retrieval of relevant data before generating an answer
-- 💬 Discord commands and natural-language interactions
-- 📈 Historical data and trend analysis
-- 🧩 Extensible architecture for future dashboards, automations, and integrations
-
-## Data Flow
+## Architecture
 
 ```text
-Clash of Clans API
-        ↓
-   Data Sync Service
-        ↓
-      Database
-        ↓
- Data Retrieval / AI
-        ↓
-    Discord Bot
-        ↓
-   Clan Members
+                 ┌──────────────────────┐
+                 │ Clash of Clans API   │
+                 └──────────┬───────────┘
+                            │
+                            ▼
+                 ┌──────────────────────┐
+                 │   Sync Service       │
+                 │   (write access)     │
+                 └──────────┬───────────┘
+                            │
+                            ▼
+                 ┌──────────────────────┐
+                 │  Dedicated Supabase   │
+                 │ current + historical │
+                 │       data           │
+                 └──────────┬───────────┘
+                            │ read-only
+                            ▼
+                 ┌──────────────────────┐
+                 │    AI Retrieval      │
+                 │ keyword/context      │
+                 │       routing        │
+                 └──────────┬───────────┘
+                            │
+                            ▼
+                 ┌──────────────────────┐
+                 │    Discord Bot       │
+                 │       /ask           │
+                 └──────────────────────┘
 ```
 
-The bot is intended to keep its own copy of relevant clan data rather than depending on a live API request for every Discord question. This allows faster queries, historical analysis, and more flexible AI-powered retrieval.
+The Discord/AI runtime is intentionally separate from the existing CoC watcher system. The sync process owns the CoC API credentials and writes to this project's database. The Discord/AI runtime uses the database through a read-only key and cannot modify production data.
 
-## Project Status
+## Current implementation
 
-🚧 **Under active development**
+### Data layer
 
-Development will be done incrementally, beginning with the data synchronization and database foundation, followed by the Discord and AI layers.
+- Clan and member synchronization from the CoC API
+- Current-war synchronization
+- War-log synchronization
+- Capital raid synchronization
+- Player snapshots for historical analysis
+- CWL table/schema reserved for the next sync phase
+- Sync run status/error logging
 
-## Security
+### AI layer
 
-Secrets must never be committed to this repository. This includes:
+The AI does not blindly send the whole database to the model. It first classifies the question and loads the smallest useful context, expanding into history when the question requires trends or past activity.
 
-- Clash of Clans API keys
+Examples:
+
+```text
+"who has the lowest donations?"
+        ↓
+member context
+
+"who didn't attack in the current war?"
+        ↓
+war + member context
+
+"how did our activity change in March?"
+        ↓
+member + historical snapshot context
+```
+
+The model is instructed to answer only from the supplied context and to explicitly state when the database does not contain enough evidence.
+
+### Discord
+
+The first command is:
+
+```text
+/ask question:<your question>
+```
+
+The command handles Discord's message-length limit by splitting longer answers into multiple messages.
+
+## Running
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Create your local environment file from `.env.example` and fill in the secrets.
+
+Run the Discord bot:
+
+```bash
+npm start
+```
+
+Run the synchronization service:
+
+```bash
+npm run sync
+```
+
+For production, run the bot and sync process as separate processes/services so a Discord restart does not stop data collection and vice versa.
+
+## Supabase setup
+
+Run `supabase/schema.sql` in the **separate Supabase project** created for this bot.
+
+Do not give the Discord/AI process the `SUPABASE_SERVICE_ROLE_KEY`. The service-role key is only for synchronization. The AI/Discord side is designed to use the anonymous or a dedicated read-only key with appropriate database policies.
+
+## Secrets
+
+Never commit:
+
+- CoC API tokens
 - Discord bot tokens
-- Supabase/database credentials
-- AI provider API keys
-- Service-role keys
+- Supabase service-role keys
+- AI API keys
 
-Use environment variables and a local `.env` file for sensitive configuration.
+Use environment variables or your hosting platform's secret manager.
 
-## License
+## Roadmap
 
-License to be determined as the project develops.
+1. Complete robust CoC synchronization, including CWL and richer war/attack records.
+2. Add structured AI retrieval tools for wars, attacks, players, capital raids, and historical trends.
+3. Add Discord channel/category routing for selected AI responses.
+4. Add permissions and leader-only/admin commands.
+5. Add scheduled summaries and automatic war/CWL alerts.
+
+## Project status
+
+🚧 **Foundation in active development**
