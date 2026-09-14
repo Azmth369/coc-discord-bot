@@ -64,9 +64,9 @@ function splitDiscordMessage(text, max = PAGE_SIZE) {
   return chunks.length ? chunks : ['No answer generated.'];
 }
 
-function rememberAnswer(question, result, userId, provider) {
+function rememberAnswer(question, result, userId, provider, elapsed) {
   const id = `${userId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-  pendingAnswers.set(id, { question, result, userId, provider, expiresAt: Date.now() + ANSWER_TTL_MS });
+  pendingAnswers.set(id, { question, result, userId, provider, elapsed, page: 0, expiresAt: Date.now() + ANSWER_TTL_MS });
   setTimeout(() => pendingAnswers.delete(id), ANSWER_TTL_MS).unref?.();
   return id;
 }
@@ -99,7 +99,7 @@ async function handleAiCommand(interaction, provider, generator) {
     const result = await generator(question);
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     const chunks = splitDiscordMessage(result);
-    const id = rememberAnswer(question, result, interaction.user.id, provider);
+    const id = rememberAnswer(question, result, interaction.user.id, provider, elapsed);
     await interaction.editReply({ content: pageContent(provider, elapsed, chunks, 0), components: [viewerRow(id, 0, chunks.length)] });
   } catch (error) {
     console.error(`[discord] ${provider.toLowerCase()} failed`, error);
