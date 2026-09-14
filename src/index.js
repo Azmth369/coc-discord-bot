@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import './discord.js';
 import { syncClan, syncWar, syncHistory, syncCapital, syncCwl, run } from './sync.js';
 
 const schedules = [
@@ -13,32 +12,31 @@ const schedules = [
 
 let syncRunning = false;
 
-async function runSync(name, fn) {
-  if (syncRunning) {
-    console.log(`[sync] skipped ${name}; another sync is still running`);
-    return;
-  }
+export async function startSyncScheduler() {
+  if (syncRunning) return;
   syncRunning = true;
   try {
-    console.log(`[sync] starting (${name})`);
-    await run(name, fn);
-    console.log(`[sync] complete (${name})`);
+    await run('startup', async () => {
+      await syncClan(false);
+      await syncWar();
+      await syncHistory();
+      await syncCapital();
+      await syncCwl();
+    });
   } finally {
     syncRunning = false;
   }
+
+  for (const [name, ms, fn] of schedules) {
+    if (!Number.isFinite(ms) || ms <= 0) continue;
+    setInterval(async () => {
+      if (syncRunning) return console.log(`[sync] skipped ${name}; another sync is running`);
+      syncRunning = true;
+      try { await run(name, fn); }
+      finally { syncRunning = false; }
+    }, ms);
+  }
+  console.log('[sync] scheduler started');
 }
 
-await runSync('startup', async () => {
-  await syncClan(false);
-  await syncWar();
-  await syncHistory();
-  await syncCapital();
-  await syncCwl();
-});
-
-for (const [name, ms, fn] of schedules) {
-  if (!Number.isFinite(ms) || ms <= 0) continue;
-  setInterval(() => runSync(name, fn).catch(error => console.error(`[sync:${name}]`, error)), ms);
-}
-
-console.log('[sync] scheduler started; Discord bot is running in the same process');
+if (process.argv[1]?.endsWith('/index.js')) await startSyncScheduler();
