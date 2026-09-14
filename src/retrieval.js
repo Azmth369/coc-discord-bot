@@ -79,7 +79,7 @@ export async function getCapitalSeasons(maxRows = 50) {
 }
 
 export async function getCwlSeasons(maxRows = 50) {
-  const { data, error } = await db.from('cwl_seasons').select('season_key,data').order('season_key', ascending => false).limit(bounded(maxRows, 50, 100));
+  const { data, error } = await db.from('cwl_seasons').select('season_key,data').order('season_key', { ascending: false }).limit(bounded(maxRows, 50, 100));
   if (error) throw error;
   return data ?? [];
 }
