@@ -43,7 +43,7 @@ export async function getWarMembers(warKeyValue, maxRows = 100) {
 }
 
 export async function getWarAttacks(warKeyValue, maxRows = 100) {
-  const { data, error } = await db.from('war_attacks').select('attacker_tag,attacker_name,defender_tag,defender_name,stars,destruction_percentage,order_no,duration_seconds,attack_time,observed_at,data').eq('war_key', warKeyValue).order('order_no').limit(bounded(maxRows, 100, 500));
+  const { data, error } = await db.from('war_attacks').select('war_key,attacker_tag,attacker_name,defender_tag,defender_name,stars,destruction_percentage,order_no,duration_seconds,attack_time,observed_at,data').eq('war_key', warKeyValue).order('order_no').limit(bounded(maxRows, 100, 500));
   if (error) throw error;
   return data ?? [];
 }
@@ -72,22 +72,22 @@ export async function getCapitalAttacks(filters = {}) {
   return data ?? [];
 }
 
-export async function getCapitalSeasons(maxRows = 12) {
-  const { data, error } = await db.from('capital_raids').select('season_key,data').order('season_key', { ascending: false }).limit(bounded(maxRows, 12, 50));
+export async function getCapitalSeasons(maxRows = 50) {
+  const { data, error } = await db.from('capital_raids').select('season_key,data').order('season_key', { ascending: false }).limit(bounded(maxRows, 50, 100));
   if (error) throw error;
   return data ?? [];
 }
 
-export async function getCwlSeasons(maxRows = 12) {
-  const { data, error } = await db.from('cwl_seasons').select('season_key,data').order('season_key', { ascending: false }).limit(bounded(maxRows, 12, 50));
+export async function getCwlSeasons(maxRows = 50) {
+  const { data, error } = await db.from('cwl_seasons').select('season_key,data').order('season_key', ascending => false).limit(bounded(maxRows, 50, 100));
   if (error) throw error;
   return data ?? [];
 }
 
-export async function getCwlWars(seasonKey = null, maxRows = 20) {
+export async function getCwlWars(seasonKey = null, maxRows = 100) {
   let q = db.from('cwl_wars').select('season_key,war_tag,opponent_clan_tag,opponent_name,state,data').order('war_tag');
   if (seasonKey) q = q.eq('season_key', seasonKey);
-  const { data, error } = await q.limit(bounded(maxRows, 20, 100));
+  const { data, error } = await q.limit(bounded(maxRows, 100, 200));
   if (error) throw error;
   return data ?? [];
 }
