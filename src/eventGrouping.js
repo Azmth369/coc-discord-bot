@@ -53,6 +53,10 @@ function getWarEndFromKey(warKey) {
   return match ? parseCoCTimestamp(match[1]) : null;
 }
 
+function getWarResult(data, clan) {
+  return normalizeResult(data?.result ?? clan?.result ?? data?.clanResult);
+}
+
 export function groupCapitalAttacksByRaidPeriod(seasons = [], attacks = []) {
   const periods = new Map();
   for (const season of seasons) {
@@ -106,9 +110,10 @@ export function groupCapitalAttacksByRaidPeriod(seasons = [], attacks = []) {
 export function compactCapitalRaidContext(seasons = [], attacks = []) {
   const periods = groupCapitalAttacksByRaidPeriod(seasons, attacks);
   return {
+    event_type: 'capital_raid',
     periods,
     totals: { raid_periods: periods.length, periods_with_attack_data: periods.filter(p => p.attack_data_available).length, attack_rows_available: periods.reduce((sum, p) => sum + p.attack_count, 0) },
-    note: 'A raid period can exist in capital_raids without individual attack rows. Only periods with attack_data_available=true contain captured individual attacks. Legacy imports sharing the same real-world start time are merged into that raid period.'
+    note: 'Capital Raid is its own event dataset. A raid period can exist in capital_raids without individual attack rows. Only periods with attack_data_available=true contain captured individual attacks. Legacy imports sharing the same real-world start time are merged into that raid period.'
   };
 }
 
@@ -122,8 +127,9 @@ export function compactWarAttackContext(wars = [], attacks = []) {
     const opponent = data.opponent ?? {};
     const start = parseCoCTimestamp(war.start_time) || parseCoCTimestamp(data.startTime);
     const end = parseCoCTimestamp(war.end_time) || parseCoCTimestamp(data.endTime);
-    const result = normalizeResult(data.result ?? data.result?.result);
+    const result = getWarResult(data, clan);
     const row = {
+      event_type: 'clan_war',
       war_key: war.war_key,
       label: formatWarPeriod(start, end),
       start_time: start?.toISOString() ?? war.start_time ?? null,
@@ -167,6 +173,7 @@ export function compactWarAttackContext(wars = [], attacks = []) {
   for (const row of grouped) row.attack_data_available = row.attack_count > 0;
 
   return {
+    event_type: 'clan_war',
     wars: grouped.sort((a, b) => String(a.start_time || a.end_time || '').localeCompare(String(b.start_time || b.end_time || ''))),
     totals: {
       wars: grouped.length,
@@ -174,27 +181,132 @@ export function compactWarAttackContext(wars = [], attacks = []) {
       attack_rows_available: grouped.reduce((sum, w) => sum + w.attack_count, 0),
       wars_without_attack_data: grouped.filter(w => !w.attack_data_available).length
     },
-    note: 'A warlog entry can exist without individual attack rows. Individual attack data is only available when the currentwar response was captured while the war was active or ended. Missing historical attack rows are reported as unavailable rather than invented.'
+    note: 'This context contains NORMAL CLAN WAR records only, not CWL and not Capital Raid. A warlog entry can exist without individual attack rows. Individual attack data is only available when the currentwar response was captured while the war was active or ended. Missing historical attack rows are reported as unavailable rather than invented.'
   };
 }
 
 export function compactCwlAttackContext(seasons = [], wars = [], attacks = []) {
-  const groups = new Map();
-  for (const war of wars) {
-    const key = war.war_tag;
-    groups.set(key, {
-      season_key: war.season_key, war_tag: war.war_tag, round_no: war.data?.roundNo ?? war.data?.round_no ?? null,
-      opponent_clan_tag: war.opponent_clan_tag ?? null, opponent_name: war.opponent_name ?? null,
-      state: war.state ?? null, attack_count: 0, attack_data_available: false
+  const attacksByWar = new Map();
+  for (const attack of attacks) {
+    const key = String(attack.war_tag ?? '');
+    if (!key) continue;
+    attacksByWar.set(key, (attacksByWar.get(key) || 0) + 1);
+  }
+
+  const warRows = wars.map(war => {
+    const data = war.data ?? {};
+    const clan = data.clan ?? {};
+    const opponent = data.opponent ?? {};
+    const start = parseCoCTimestamp(data.startTime) || parseCoCTimestamp(war.data?.start_time);
+    const end = parseCoCTimestamp(data.endTime) || parseCoCTimestamp(war.data?.end_time);
+    const attackCount = attacksByWar.get(String(war.war_tag ?? '')) || 0;
+    return {
+      event_type: 'cwl',
+      season_key: war.season_key,
+      round_no: Number(war.data?.roundNo ?? war.data?.round_no ?? 0) || null,
+      war_tag: war.war_tag,
+      label: formatWarPeriod(start, end),
+      start_time: start?.toISOString() ?? null,
+      end_time: end?.toISOString() ?? null,
+      state: war.state ?? data.state ?? null,
+      result: getWarResult(data, clan),
+      opponent_clan_tag: war.opponent_clan_tag ?? opponent.tag ?? null,
+      opponent_name: war.opponent_name ?? opponent.name ?? null,
+      team_size: data.teamSize ?? null,
+      attacks_per_member: data.attacksPerMember ?? null,
+      clan_attacks: clan.attacks ?? null,
+      clan_stars: clan.stars ?? null,
+      clan_destruction_percentage: clan.destructionPercentage ?? null,
+      opponent_attacks: opponent.attacks ?? null,
+      opponent_stars: opponent.stars ?? null,
+      opponent_destruction_percentage: opponent.destructionPercentage ?? null,
+      attack_count: attackCount,
+      attack_data_available: attackCount > 0
+    };
+  });
+
+  const warByTag = new Map(warRows.map(war => [war.war_tag, war]));
+  const seasonMap = new Map();
+  for (const season of seasons) {
+    const seasonKey = season.season_key;
+    const data = season.data ?? {};
+    seasonMap.set(seasonKey, {
+      event_type: 'cwl',
+      season_key: seasonKey,
+      label: formatRange(parseCoCTimestamp(data.startTime), parseCoCTimestamp(data.endTime)),
+      start_time: parseCoCTimestamp(data.startTime)?.toISOString() ?? null,
+      end_time: parseCoCTimestamp(data.endTime)?.toISOString() ?? null,
+      rounds: [],
+      round_count: 0,
+      attack_rows_available: 0
     });
   }
-  for (const attack of attacks) {
-    if (groups.has(attack.war_tag)) groups.get(attack.war_tag).attack_count += 1;
+
+  // Every CWL war belongs to one season and one numbered round/day. Keep that
+  // hierarchy explicit so the model cannot treat the seven daily wars as one
+  // normal Clan War.
+  for (const war of warRows) {
+    if (!seasonMap.has(war.season_key)) {
+      seasonMap.set(war.season_key, {
+        event_type: 'cwl', season_key: war.season_key, label: 'Unknown period', start_time: null, end_time: null,
+        rounds: [], round_count: 0, attack_rows_available: 0
+      });
+    }
+    const season = seasonMap.get(war.season_key);
+    let round = season.rounds.find(r => r.round_no === war.round_no);
+    if (!round) {
+      round = {
+        event_type: 'cwl_round',
+        round_no: war.round_no,
+        label: war.label,
+        start_time: war.start_time,
+        end_time: war.end_time,
+        wars: [],
+        war_count: 0,
+        attack_rows_available: 0
+      };
+      season.rounds.push(round);
+    }
+    round.wars.push(war);
+    round.war_count += 1;
+    round.attack_rows_available += war.attack_count;
+    season.attack_rows_available += war.attack_count;
   }
-  for (const row of groups.values()) row.attack_data_available = row.attack_count > 0;
+
+  const nestedSeasons = [...seasonMap.values()].map(season => {
+    season.rounds.sort((a, b) => Number(a.round_no ?? 0) - Number(b.round_no ?? 0));
+    season.round_count = season.rounds.length;
+    const allWars = season.rounds.flatMap(round => round.wars);
+    if (!season.start_time) {
+      const starts = allWars.map(w => w.start_time).filter(Boolean).sort();
+      season.start_time = starts[0] ?? null;
+    }
+    if (!season.end_time) {
+      const ends = allWars.map(w => w.end_time).filter(Boolean).sort();
+      season.end_time = ends.at(-1) ?? null;
+    }
+    if (season.start_time || season.end_time) season.label = formatRange(parseCoCTimestamp(season.start_time), parseCoCTimestamp(season.end_time));
+    return season;
+  });
+
+  const sortedWars = [...warRows].sort((a, b) =>
+    String(a.season_key || '').localeCompare(String(b.season_key || '')) ||
+    Number(a.round_no ?? 0) - Number(b.round_no ?? 0) ||
+    String(a.start_time || '').localeCompare(String(b.start_time || ''))
+  );
+
   return {
-    seasons: seasons.map(s => ({ season_key: s.season_key, start_time: s.data?.startTime ?? null, end_time: s.data?.endTime ?? null })),
-    wars: [...groups.values()].sort((a, b) => String(a.season_key || '').localeCompare(String(b.season_key || '')) || Number(a.round_no ?? 0) - Number(b.round_no ?? 0)),
-    note: 'A CWL season/war can exist without individual attack rows. Only attack_data_available=true groups contain captured individual attacks.'
+    event_type: 'cwl',
+    seasons: nestedSeasons,
+    wars: sortedWars,
+    totals: {
+      seasons: nestedSeasons.length,
+      rounds: nestedSeasons.reduce((sum, season) => sum + season.round_count, 0),
+      wars: sortedWars.length,
+      wars_with_attack_data: sortedWars.filter(w => w.attack_data_available).length,
+      wars_without_attack_data: sortedWars.filter(w => !w.attack_data_available).length,
+      attack_rows_available: sortedWars.reduce((sum, w) => sum + w.attack_count, 0)
+    },
+    note: 'CWL is a separate event type from normal Clan War. A CWL season contains separate daily rounds/wars; each round has its own opponent, result, score, destruction and attack records. Never combine the rounds into one normal Clan War. Only wars with attack_data_available=true contain captured individual attack rows; missing attack rows are reported as unavailable rather than invented.'
   };
 }
