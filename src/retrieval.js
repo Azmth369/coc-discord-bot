@@ -2,12 +2,8 @@ import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 
 const key = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_READONLY_KEY;
-if (!process.env.SUPABASE_URL || !key) {
-  throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY (or SUPABASE_READONLY_KEY) are required');
-}
-
+if (!process.env.SUPABASE_URL || !key) throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY (or SUPABASE_READONLY_KEY) are required');
 const db = createClient(process.env.SUPABASE_URL, key, { auth: { persistSession: false } });
-
 const limit = (value, fallback, max) => Math.min(Number(value || fallback), max);
 
 export async function getPlayers(filters = {}) {
@@ -20,29 +16,35 @@ export async function getPlayers(filters = {}) {
 }
 
 export async function getCurrentWar() {
-  const { data, error } = await db.from('wars')
-    .select('war_key,state,start_time,end_time,data')
-    .in('state', ['preparation','inWar'])
-    .order('start_time', { ascending: false })
-    .limit(1);
+  const { data, error } = await db.from('wars').select('war_key,state,start_time,end_time,data').in('state', ['preparation', 'inWar']).order('start_time', { ascending: false }).limit(1);
   if (error) throw error;
   return data?.[0] ?? null;
 }
 
 export async function searchWars(term, maxRows = 25) {
-  const { data, error } = await db.from('wars')
-    .select('war_key,state,start_time,end_time,data')
-    .or(`war_key.ilike.%${term}%,data->>opponent->>name.ilike.%${term}%`)
-    .order('end_time', { ascending: false })
-    .limit(limit(maxRows, 25, 100));
+  const { data, error } = await db.from('wars').select('war_key,state,start_time,end_time,data').order('end_time', { ascending: false }).limit(100);
   if (error) throw error;
-  return data ?? [];
+  const needle = String(term || '').toLowerCase();
+  const rows = (data ?? []).filter(w => !needle || JSON.stringify(w.data ?? {}).toLowerCase().includes(needle) || String(w.war_key).toLowerCase().includes(needle));
+  return rows.slice(0, limit(maxRows, 25, 100));
 }
 
 export async function getSnapshots(playerTag, since = null, maxRows = 200) {
   let q = db.from('player_snapshots').select('player_tag,captured_at,data').eq('player_tag', playerTag).order('captured_at', { ascending: false });
   if (since) q = q.gte('captured_at', since);
   const { data, error } = await q.limit(limit(maxRows, 200, 1000));
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getWarAttacks(warKeyValue, maxRows = 100) {
+  const { data, error } = await db.from('war_attacks').select('attacker_tag,attacker_name,defender_tag,defender_name,stars,destruction_percentage,order_no,attack_time,data').eq('war_key', warKeyValue).order('order_no').limit(limit(maxRows, 100, 500));
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getWarMembers(warKeyValue, maxRows = 100) {
+  const { data, error } = await db.from('war_members').select('player_tag,player_name,map_position,attacks_available,attacks_used,stars_earned,destruction_percentage,data').eq('war_key', warKeyValue).order('map_position').limit(limit(maxRows, 100, 100));
   if (error) throw error;
   return data ?? [];
 }
