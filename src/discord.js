@@ -21,7 +21,10 @@ if (!token || !clientId) throw new Error('DISCORD_TOKEN and DISCORD_CLIENT_ID ar
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const pendingAnswers = new Map();
 const ANSWER_TTL_MS = 15 * 60 * 1000;
-const PAGE_SIZE = 1800;
+// Keep normal answers as a single clean Discord message. Only paginate once the
+// answer is too long to fit comfortably in one message.
+const PAGINATION_THRESHOLD = 1800;
+const PAGE_SIZE = PAGINATION_THRESHOLD;
 
 const commands = [
   new SlashCommandBuilder()
@@ -100,7 +103,8 @@ async function handleAiCommand(interaction, provider, generator) {
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     const chunks = splitDiscordMessage(result);
     const id = rememberAnswer(question, result, interaction.user.id, provider, elapsed);
-    await interaction.editReply({ content: pageContent(provider, elapsed, chunks, 0), components: [viewerRow(id, 0, chunks.length)] });
+    const components = chunks.length > 1 ? [viewerRow(id, 0, chunks.length)] : [];
+    await interaction.editReply({ content: pageContent(provider, elapsed, chunks, 0), components });
   } catch (error) {
     console.error(`[discord] ${provider.toLowerCase()} failed`, error);
     const message = error?.message?.slice(0, 300) || 'Unknown error';
