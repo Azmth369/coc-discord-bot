@@ -16,21 +16,19 @@ Clash of Clans API
         │
         ▼
  Sync scheduler ──────► Dedicated Supabase
-  (write key)             │
-                          │ read-only
-                          ▼
-                  Retrieval + Analytics
-                     │           │
-                     ▼           ▼
-                 Sarvam AI    Gemini AI
-                     │           │
-                     └─────┬─────┘
-                           ▼
-                        Discord
-                 /ask            /tell
+  (server-side key)       │
+                          │
+                          ├── read-only AI retrieval
+                          │       ▼
+                          │   Sarvam / Gemini
+                          │       ▼
+                          │    Discord
+                          │
+                          └── backend-only AI state
+                              (pagination + short memory)
 ```
 
-This project is independent of the existing CoC watcher database. The sync layer owns the CoC API and Supabase service-role credentials; Discord/AI only reads through the anonymous/read-only key.
+This project is independent of the existing CoC watcher database. All secrets remain server-side. The AI retrieval layer uses the anonymous/read-only key for CoC data, while the combined Render runtime also uses the service-role key for the backend-only `ai_answers` and `ai_conversations` tables so Discord state survives restarts.
 
 ## Features
 
@@ -91,8 +89,12 @@ Users receive a short safe message with the recommended alternative (`/tell` for
 ### Deterministic analytics
 The application calculates evidence such as missed attacks and player trends in code before AI interpretation. This reduces hallucination risk for straightforward numerical questions.
 
-### Long-answer controls
-Long AI responses are split into Discord-safe chunks. Instead of the old **Previous/Next** pagination and custom forwarding button, the response now uses **See more** and **See less** controls. Only the user who asked the question can expand or collapse that answer. The saved answer remains available for 24 hours in the bot process.
+### Persistent long-answer controls
+Long AI responses are split into Discord-safe chunks. Instead of the old **Previous/Next** pagination and custom forwarding button, the response now uses **See more** and **See less** controls. Only the user who asked the question can expand or collapse that answer.
+
+Pagination state is not dependent on an in-memory collector. The full answer is stored in the backend-only `ai_answers` table for 30 days, so the buttons can continue working after a Render restart or redeploy. The button `custom_id` also carries the current page, so navigation itself does not depend on process memory.
+
+The previous one-hour AI conversation memory is also stored in the backend-only `ai_conversations` table. This means a normal follow-up can survive a Render restart as long as it is still inside the one-hour context window.
 
 For sharing an answer to another Discord channel, use Discord's built-in message forwarding feature.
 
@@ -113,7 +115,7 @@ Run it from the project environment after placing the CSV somewhere accessible t
 npm run import:legacy -- /path/to/attack_log_rows.csv
 ```
 
-The importer uses `SUPABASE_SERVICE_ROLE_KEY`, so run it only in the trusted sync environment. Never put that key into Discord/client-side code.
+The importer uses `SUPABASE_SERVICE_ROLE_KEY`, so run it only in the trusted server environment. Never expose that key to users or client-side code.
 
 ## Environment
 
@@ -122,8 +124,8 @@ Configure:
 - `COC_API_TOKEN`
 - `COC_CLAN_TAG`
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY` — sync and trusted one-time imports only
-- `SUPABASE_ANON_KEY` — Discord/AI read-only access
+- `SUPABASE_SERVICE_ROLE_KEY` — server-side only; required by the sync scheduler and backend AI-state persistence
+- `SUPABASE_ANON_KEY` — AI/Discord read-only access to the CoC data tables
 - `DISCORD_TOKEN`
 - `DISCORD_CLIENT_ID`
 - optional `DISCORD_GUILD_ID` for instant guild command registration
@@ -139,7 +141,13 @@ Never commit secrets or raw player data exports.
 
 Create a **separate Supabase project** for this bot and run `supabase/schema.sql` in its SQL editor.
 
-The schema enables RLS and provides `anon` SELECT policies for the AI data tables. The service-role key is used only by the synchronization process and must never be placed in Discord or client-side code.
+The CoC data tables use RLS with `anon` SELECT policies for the AI retrieval layer. The `ai_answers` and `ai_conversations` tables are backend-only and have no `anon` access. The Render runtime uses the server-side service-role key for those two state tables; that key must never be exposed to Discord users, browser code, or the repository.
+
+## Render + UptimeRobot
+
+The runtime exposes a lightweight `/health` endpoint on `PORT` (default `3000`). Point UptimeRobot at the Render service's `/health` URL.
+
+UptimeRobot is useful for external monitoring and, on plans where an HTTP request wakes an idle service, can also keep a Render web service receiving traffic. It does **not** replace persistent storage: Render's service filesystem is ephemeral across deploys, while the AI state is intentionally stored in Supabase.
 
 ## Run locally
 
@@ -165,12 +173,13 @@ npm run sync:once
 ## Security model
 
 ```text
-CoC API token ──► sync service ──write──► Supabase
-                                         ▲
-                                         │
-                           read-only anon key
-                                         │
-                                  AI + Discord
+CoC API token ──► server runtime ──write──► Supabase
+                       │                    │
+                       │                    ├── CoC data ← anon read-only AI client
+                       │                    │
+                       └── backend-only AI state ← service-role key
+                                                    │
+                                                  Discord
 ```
 
-Do not give the Discord bot the Supabase service-role key.
+The service-role key is a server-side secret. It is not sent to Discord clients or exposed in bot responses.
