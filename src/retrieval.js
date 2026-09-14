@@ -84,6 +84,14 @@ export async function getCwlSeasons(maxRows = 50) {
   return data ?? [];
 }
 
+export async function getCwlRounds(seasonKey = null, maxRows = 200) {
+  let q = db.from('cwl_rounds').select('season_key,round_no,opponent_tag,opponent_name,state,data').order('season_key').order('round_no');
+  if (seasonKey) q = q.eq('season_key', seasonKey);
+  const { data, error } = await q.limit(bounded(maxRows, 200, 500));
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function getCwlWars(seasonKey = null, maxRows = 100) {
   let q = db.from('cwl_wars').select('season_key,war_tag,opponent_clan_tag,opponent_name,state,data').order('war_tag');
   if (seasonKey) q = q.eq('season_key', seasonKey);
