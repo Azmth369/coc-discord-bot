@@ -106,18 +106,28 @@ async function buildContext(question) {
   return context;
 }
 
-async function generateWithModel(model, key, question, bodyWithoutContext) {
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function generateWithModel(model, key, body, attempt = 0) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(bodyWithoutContext)
+    body: JSON.stringify(body)
   });
 
   if (!res.ok) {
     const message = await res.text();
     const error = new Error(`Gemini ${res.status}: ${message}`);
     error.status = res.status;
+
+    // 429/5xx are transient according to Google's Gemini API guidance.
+    if ([408, 429, 500, 502, 503, 504].includes(res.status) && attempt < 3) {
+      const delay = 1500 * (2 ** attempt) + Math.floor(Math.random() * 500);
+      console.warn(`[ai] ${model} returned ${res.status}; retrying in ${delay}ms`);
+      await sleep(delay);
+      return generateWithModel(model, key, body, attempt + 1);
+    }
     throw error;
   }
 
@@ -127,7 +137,7 @@ async function generateWithModel(model, key, question, bodyWithoutContext) {
 
 async function askGemini(question, context) {
   const key = process.env.GEMINI_API_KEY;
-  const configuredModel = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+  const configuredModel = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
   if (!key) throw new Error('GEMINI_API_KEY is required');
 
   const system = `You are a Clash of Clans clan analyst. Answer ONLY from the supplied database context. Never invent player stats, attacks, wars, dates, or outcomes. Distinguish current data from historical data. If the context is insufficient, say what is missing. For rankings, calculate from supplied values and show key numbers. For Clan Capital questions, treat capital_gold as the member's capital resources looted and stars as attack stars; if the user says "scored" without defining a metric, state which metric you are using. For missed attacks, use missed_attacks and do not infer a miss when attacks_available is unknown or zero. For war comparisons, identify the opponent and date when supplied. For CWL, treat cwl_wars as individual league wars and do not confuse them with ordinary clan wars. Prefer targeted context over unrelated records. Keep answers concise, useful, and data-backed.`;
@@ -138,14 +148,12 @@ async function askGemini(question, context) {
   };
 
   try {
-    return await generateWithModel(configuredModel, key, question, body);
+    return await generateWithModel(configuredModel, key, body);
   } catch (error) {
-    // Google can restrict/deprecate access to a model for a project even when the
-    // model name is still documented. Automatically retry once on a model-not-found
-    // response so the Discord bot does not break when the configured legacy model is unavailable.
-    if (error.status === 404 && configuredModel !== 'gemini-3.6-flash') {
-      console.warn(`[ai] ${configuredModel} unavailable; retrying with gemini-3.6-flash`);
-      return generateWithModel('gemini-3.6-flash', key, question, body);
+    const fallbackModel = 'gemini-3.5-flash';
+    if ((error.status === 404 || error.status === 503 || error.status === 502 || error.status === 504) && configuredModel !== fallbackModel) {
+      console.warn(`[ai] ${configuredModel} unavailable; falling back to ${fallbackModel}`);
+      return generateWithModel(fallbackModel, key, body);
     }
     throw error;
   }
