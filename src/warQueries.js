@@ -3,6 +3,8 @@ import { getCurrentWar, getWarMembers } from './retrieval.js';
 const UNUSED_ATTACK_PATTERNS = [
   /\b(?:has|have|had)\s+(?:not|n't)\s+used\s+(?:any|an|their|the)?\s*attacks?\b/i,
   /\b(?:has|have|had)\s+(?:not|n't)\s+(?:made|done|used)\s+(?:any|an|their|the)?\s*(?:attack|attacks)\b/i,
+  /\b(?:has|have|had)\s+(?:not|n't)\s+attacked\b/i,
+  /\b(?:who|which|what)\b.*\b(?:has|have)\s+(?:not|n't)\s+(?:attack|attacked)\b/i,
   /\b(?:no|zero)\s+attacks?\b/i,
   /\b(?:unused|un-used)\s+attacks?\b/i,
   /\b(?:without|yet to)\s+(?:use|make|do)\s+(?:any\s+)?attacks?\b/i
@@ -12,7 +14,8 @@ export function isUnusedCurrentWarAttackQuestion(question = '') {
   const q = String(question).trim();
   if (!q) return false;
   const mentionsCurrentWar = /\b(?:current|ongoing|this)\s+war\b|\bcurrentwar\b/i.test(q) || /participants?\s+of\s+our\s+clan/i.test(q);
-  return mentionsCurrentWar && UNUSED_ATTACK_PATTERNS.some(pattern => pattern.test(q));
+  const explicitlyHistorical = /\b(?:last|previous|past|historical|history)\s+(?:war|wars|attack|attacks)\b|\b(?:cwl|clan war league|capital raid)\b/i.test(q);
+  return !explicitlyHistorical && (mentionsCurrentWar || /\bwho\b.*\b(?:attacked|attack|attacks)\b/i.test(q)) && UNUSED_ATTACK_PATTERNS.some(pattern => pattern.test(q));
 }
 
 export async function answerUnusedCurrentWarAttackQuestion(question = '') {
