@@ -287,7 +287,7 @@ async function sendPonyoAlert({ interaction, provider, question, error, classifi
 client.once('ready', () => console.log(`Discord bot online as ${client.user.tag}`));
 
 async function handleAiCommand(interaction, provider, generator) {
-  await interaction.deferReply();
+  await interaction.deferReply({ ephemeral: true });
   const started = Date.now();
   let question = '';
   try {
