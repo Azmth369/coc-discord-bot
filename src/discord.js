@@ -10,6 +10,7 @@ import {
   SlashCommandBuilder
 } from 'discord.js';
 import { answer, tell } from './ai.js';
+import { answerUnusedCurrentWarAttackQuestion } from './warQueries.js';
 import {
   attachAiAnswerMessage,
   cleanupAiState,
@@ -307,7 +308,14 @@ async function handleAiCommand(interaction, provider, generator) {
     }
 
     const contextualQuestion = buildContextualQuestion(question, turns);
-    const result = await generator(contextualQuestion);
+    let result;
+    try {
+      result = await answerUnusedCurrentWarAttackQuestion(question);
+    } catch (deterministicError) {
+      console.error('[discord] deterministic current-war query failed; falling back to AI', deterministicError);
+      result = null;
+    }
+    if (result == null) result = await generator(contextualQuestion);
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 
     try {
@@ -422,5 +430,9 @@ setInterval(() => {
   cleanupAiState().catch(error => console.error('[discord] AI state cleanup failed', error));
 }, 6 * 60 * 60 * 1000).unref?.();
 
-await registerCommands();
-await client.login(token);
+registerCommands()
+  .then(() => client.login(token))
+  .catch(error => {
+    console.error('[discord] startup failed', error);
+    process.exitCode = 1;
+  });
